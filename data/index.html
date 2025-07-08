@@ -1,0 +1,23 @@
+
+<html>
+<head>
+  <title>ESP32 Web Server</title>
+  <meta charset="UTF-8">
+  <link rel="icon" href="data:,">
+  <script>
+  </script>
+</head>
+<body>
+  <h1>Hello from ESP32!</h1>
+  <p>Trang web này chạy trên ESP32.</p>
+  <div class="container">
+    <form action="/set_tcp_ip" method="POST">
+    <label>TCP Server IP:</label>
+    <input type="text" name="tcp_ip">
+    <label>TCP Server Port:</label>
+    <input type="number" name="tcp_port">
+    <button type="submit">Lưu cấu hình</button>
+    </form>
+  </div>
+</body>
+</html>
