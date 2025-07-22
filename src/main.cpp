@@ -1,3 +1,9 @@
+#define USE_ETHERNET
+#define USE_LEDPIXEL
+#define USE_TCP
+#define USE_WIFI_AP
+#define USE_INFO
+
 #ifdef USE_ETHERNET
 #include <WebServer_ESP32_SC_W5500.h>
 #endif// USE_ETHERNET
@@ -9,8 +15,6 @@
 #include <HardwareSerial.h>
 #include <LittleFS.h>
 #include <AsyncElegantOTA.h>
-
-#include "LMD.h"
 
 #ifdef USE_LEDPIXEL
 #include <Adafruit_NeoPixel.h>
@@ -81,9 +85,6 @@ std::vector<String> consoleBuffer;
 const size_t MAX_CONSOLE_LINES = 200;
 #include "esp_heap_caps.h"
 
-
-#include "ALC_Project.h"
-// #include "LoRaConfig.h"
 
 void consolePrintln(const String& line);
 void consolePrintf(const char* format, ...);
@@ -177,6 +178,7 @@ String tcpRole = "client";
 
 
 #include "WifiPostal.h" // Thư viện WifiPostal để tạo captive portal
+#include "Info.h" // Thư viện Info để quản lý thông tin hệ thống
 // AsyncWebServer server(80);
 // AsyncWebSocket ws("/ws");// nếu dùng WebSocket
 
@@ -452,6 +454,13 @@ void loadConfig() {
   file.close();
 }
 
+uint16_t GetServerPort(){
+  #ifdef USE_ETHERNET
+  return tcpConfigPort;
+  #else
+  return 80; // Default port for HTTP server
+  #endif// USE_ETHERNET
+}
 
 void setup() {
   // delay(10000);
@@ -527,8 +536,13 @@ void setup() {
 
   #ifdef USE_WIFI_AP
   WiFi_AP_setup();
-  #endif//USE_WIFI_AP  
 
+  #endif//USE_WIFI_AP  
+  #ifdef USE_INFO
+  // Khởi tạo WebSocket cho thông tin hệ thống
+  setupInfoSocketAndTimer(&server);
+
+  #endif//USE_INFO
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
       request->send_P(200, "text/html", index_html);
   });
@@ -549,6 +563,7 @@ void setup() {
     pixels.setPixelColor(0, pixels.Color(150, 150, 150));
     pixels.show();   // Send the updated pixel colors to the hardware.
     #endif// USE_LEDPIXEL
+    updateInfoSocket(tcpRole, tcpConfigPort, GetServerPort(), myIP, myGW, mySN, myDNS, ClientBaudrate);
     if (tcpRole == "server") {
       if (!serverStarted) {
           consolePrintln("Starting TCP server on port " + String(tcpConfigPort));
@@ -602,38 +617,40 @@ void setup() {
     serializeJson(doc, json);
     request->send(200, "application/json", json);
   });
-
-    ALC_setup(server); // Khởi tạo ALC Project
     
   // Khởi tạo WebSocket cho console
   wsConsole.onEvent(onWsConsoleEvent);
   server.addHandler(&wsConsole);
   server.begin();
+  #ifdef USE_INFO
+  //update Information
+  updateInfoSocket(tcpRole, tcpConfigPort, GetServerPort(), myIP, myGW, mySN, myDNS, ClientBaudrate);
+  #endif // USE_INFO
 
-  // AsyncElegantOTA.begin(&server);
-  // consolePrintln("OTA Update enabled at /update");
+  AsyncElegantOTA.begin(&server);
+  consolePrintln("OTA Update enabled at /update");
+
 #ifdef USE_ETHERNET
   // ESP32_W5500_onEvent();
+  // start the ethernet connection and the server:
+  // Use DHCP dynamic IP and random mac
+  uint16_t index = millis() % NUMBER_OF_MAC;
+    consolePrintln("Connecting to Ethernet: ");
+    if(ETH.begin( MISO_GPIO, MOSI_GPIO, SCK_GPIO, CS_GPIO, INT_GPIO, SPI_CLOCK_MHZ, ETH_SPI_HOST, mac[index] )){
+      consolePrintln("Ethernet connected with MAC: " + ETH.macAddress());
+      pixels.setPixelColor(0, pixels.Color(0, 150, 0));pixels.show();  
+    }else{
+      
+      ERROR = true; // Đánh dấu có lỗi nghiêm trọng
+      WARNING = false;
+    }
+    delay(1000);
+  // }
 
-
-  // // start the ethernet connection and the server:
-  // // Use DHCP dynamic IP and random mac
-  // uint16_t index = millis() % NUMBER_OF_MAC;
-  //   consolePrintln("Connecting to Ethernet: ");
-  //   if(ETH.begin( MISO_GPIO, MOSI_GPIO, SCK_GPIO, CS_GPIO, INT_GPIO, SPI_CLOCK_MHZ, ETH_SPI_HOST, mac[index] )){
-  //     consolePrintln("Ethernet connected with MAC: " + ETH.macAddress());
-  //     pixels.setPixelColor(0, pixels.Color(0, 150, 0));pixels.show();  
-  //   }else{
-  //     ERROR = true; // Đánh dấu có lỗi nghiêm trọng
-  //     WARNING = false;
-  //   }
-  //   delay(1000);
-  // // }
-
-  //   ETH.config(myIP, myGW, mySN, myDNS);
-  // // In ra địa chỉ IP Ethernet lên Serial và lưu vào consoleBuffer
-  // consolePrintln("Ethernet IP: " + ETH.localIP().toString());
-  // // ESP32_W5500_waitForConnect();
+    ETH.config(myIP, myGW, mySN, myDNS);
+  // In ra địa chỉ IP Ethernet lên Serial và lưu vào consoleBuffer
+  consolePrintln("Ethernet IP: " + ETH.localIP().toString());
+  // ESP32_W5500_waitForConnect();
 #endif // USE_ETHERNET
   ///////////////////////////////////
 #ifdef USE_TCP
@@ -685,16 +702,6 @@ if(TCPenabled) {
 }
 #endif // USE_TCP
   ///////////////////////////////////
-
-    setup_ledPanel();
-    if (!dma_display || !virtualDisp) {
-    Serial.println("Panel not initialized!");
-    return;
-    }
-    
-
-    Serial.println("Ram :" + String(ESP.getFreeHeap()/1024 )+ " KB");
-
   Serial.println("Ram :" + String(ESP.getFreeHeap()/1024) + " KB");
     consolePrintln("Setup completed");
     initPSRAM(); // Khởi tạo PSRAM nếu có
@@ -737,42 +744,41 @@ void loop() {
         #endif // USE_LEDPIXEL
       }
 
-    drawText(wheelval);
-    wheelval +=1;
 
     delay(200); 
-// if(TCPenabled){
-//   if (tcpRole == "server") {
-//     checkNewClient();
-//   } else {
-//     checkServerConnection(); 
-//   }
+  #ifdef USE_TCP
+  if(TCPenabled){
+    if (tcpRole == "server") {
+      checkNewClient();
+    } else {
+      checkServerConnection(); 
+    }
 
-//   if (Serial.available() > 0) {
-//     serialHandler();
-//   }
+    if (Serial.available() > 0) {
+      serialHandler();
+    }
 
-//   if (MySerial1.available()) {
-//     int c = MySerial1.read();
-//     MySerial1.write(c); // Gửi sang UART1
-//     Serial.write(c); // Gửi sang Serial
-//     if (tcpRole == "server" && tcpClient.connected()) {
-//       tcpClient.write(c); // Gửi sang client TCP nếu có kết nối
-//     } else if (tcpRole == "client" && wasConnectedToServer) {
-//       tcpClient.write(c); // Gửi sang server TCP nếu có kết nối
-//     }
-//   }
+    if (MySerial1.available()) {
+      int c = MySerial1.read();
+      MySerial1.write(c); // Gửi sang UART1
+      Serial.write(c); // Gửi sang Serial
+      if (tcpRole == "server" && tcpClient.connected()) {
+        tcpClient.write(c); // Gửi sang client TCP nếu có kết nối
+      } else if (tcpRole == "client" && wasConnectedToServer) {
+        tcpClient.write(c); // Gửi sang server TCP nếu có kết nối
+      }
+    }
 
-//   if(tcpClient.available()) {
-//     int c = tcpClient.read();
-//     Serial.write(c); // Gửi sang Serial
-//     MySerial1.write(c); // Gửi sang UART1
-//     if (socketConnected) {
-//       wsConsole.textAll(String((char)c)); // Gửi dữ liệu đến WebSocket console
-//     }
-//   }
-// }
-  // WiFi_AP_loop(); // Đã chuyển sang task riêng
+    if(tcpClient.available()) {
+      int c = tcpClient.read();
+      Serial.write(c); // Gửi sang Serial
+      MySerial1.write(c); // Gửi sang UART1
+      if (socketConnected) {
+        wsConsole.textAll(String((char)c)); // Gửi dữ liệu đến WebSocket console
+      }
+    }
+  }
+  #endif//USE_TCP
 
   // Tạo task riêng cho WiFi_AP_loop nếu chưa tạo
   #ifdef USE_WIFI_AP

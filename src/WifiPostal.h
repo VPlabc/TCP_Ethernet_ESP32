@@ -20,6 +20,7 @@ const IPAddress subnetMask(255, 255, 255, 0);  // no need to change: https://avi
 
 const String localIPURL = "http://4.3.2.1";	 
 
+
 const char index_html[] PROGMEM = R"=====(
 <!DOCTYPE HTML>
 <html>
@@ -189,6 +190,8 @@ const char index_console[] PROGMEM = R"rawliteral(
 </body>
 </html>
 )rawliteral";
+
+
 
 DNSServer dnsServer;
 AsyncWebServer server(80);
