@@ -1,11 +1,30 @@
+#ifdef USE_ETHERNET
 #include <WebServer_ESP32_SC_W5500.h>
+#endif// USE_ETHERNET
+
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include <HardwareSerial.h>
 #include <LittleFS.h>
+#include <AsyncElegantOTA.h>
 
+#include "LMD.h"
+
+#ifdef USE_LEDPIXEL
+#include <Adafruit_NeoPixel.h>
+#define PIN       48 
+#define NUMPIXELS 2 
+Adafruit_NeoPixel pixels(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
+#endif// USE_LEDPIXEL
+
+bool WARNING = false; // Biến để theo dõi trạng thái cảnh báo
+bool ERROR = false;
+
+bool TCPenabled = false;
+
+#ifdef USE_ETHERNET
 #define ETH_SPI_HOST        SPI3_HOST
 #define SPI_CLOCK_MHZ       25
 // Must connect INT to GPIOxx or not working
@@ -43,428 +62,473 @@ byte mac[][NUMBER_OF_MAC] =
 };
 
 IPAddress myIP(192, 168, 3, 163);
-IPAddress myGW(192, 168, 0, 1);
+IPAddress myGW(192, 168, 3, 1);
 IPAddress mySN(255, 255, 255, 0);
 
 // Google DNS Server IP
 IPAddress myDNS(8, 8, 8, 8);
 
+#endif// USE_ETHERNET
+
+// WebSocket cho console
+AsyncWebSocket wsConsole("/ws_console");
+#include <vector>
+
+bool serverStarted = false;
+bool socketConnected = false;
+// Lưu trữ các dòng console
+std::vector<String> consoleBuffer;
+const size_t MAX_CONSOLE_LINES = 200;
+#include "esp_heap_caps.h"
+
+
+#include "ALC_Project.h"
+// #include "LoRaConfig.h"
+
+void consolePrintln(const String& line);
+void consolePrintf(const char* format, ...);
+
+// Hàm kiểm tra và khởi tạo PSRAM
+void initPSRAM() {
+  if (psramInit()) {
+    consolePrintln("PSRAM initialized successfully");
+    consolePrintf("Total PSRAM: %u bytes\n", ESP.getPsramSize());
+    consolePrintf("Free PSRAM: %u bytes\n", ESP.getFreePsram());
+  } else {
+    consolePrintln("PSRAM initialization failed");
+    WARNING = true;
+  }
+}
+
+// Gọi hàm này trong setup() nếu cần
+// Hàm thêm dòng vào consoleBuffer
+void addConsoleLine(const String& line) {
+  if (consoleBuffer.size() >= MAX_CONSOLE_LINES) {
+    consoleBuffer.erase(consoleBuffer.begin());
+  }
+  consoleBuffer.push_back(line);
+  // Gửi dòng mới đến WebSocket console
+  if (socketConnected) {
+    wsConsole.textAll(line);
+  }
+}
+
+ 
+
+void consolePrintf(const char* format, ...) {
+  char buf[256];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+  Serial.print(buf);
+  addConsoleLine(String(buf));
+}
+
+// Gửi toàn bộ buffer cho client mới
+void sendConsoleBuffer(AsyncWebSocketClient *client) {
+  String all;
+  for (const auto& l : consoleBuffer) {
+    // Lọc bỏ ký tự không phải ASCII hoặc UTF-8 hợp lệ
+    String safeLine;
+    for (size_t i = 0; i < l.length(); ++i) {
+      char c = l[i];
+      if ((c >= 32 && c <= 126) || c == '\n' || c == '\r') { // chỉ gửi ký tự in được
+        safeLine += c;
+      }
+    }
+    all += safeLine + "\n";
+  }
+  client->text(all);
+}
+
+// Khi có client mới kết nối WebSocket
+void onWsConsoleEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type,
+                      void *arg, uint8_t *data, size_t len) {
+  if (type == WS_EVT_CONNECT) {
+    sendConsoleBuffer(client);
+    socketConnected = true;
+  }
+  else if (type == WS_EVT_DISCONNECT) {
+    consolePrintln("Client disconnected from console WebSocket");
+    socketConnected = false;
+  } else if (type == WS_EVT_DATA) {
+    // Không cần xử lý dữ liệu từ client, chỉ gửi dữ liệu console
+    Serial1.write(data, len); // Ghi dữ liệu nhận được từ client vào Serial1
+    consolePrintln("Received from console WebSocket: " + String((char*)data, len));
+  }
+}
+
 // Khai báo đối tượng UART
-HardwareSerial MySerial1(0); // UART1
+#ifdef USE_TCP
+  HardwareSerial MySerial1(0); // UART1
+#endif//USE_TCP
 
 const char *ssid = "I-Soft";          // Replace with your network SSID
 const char *password = "i-soft@2023"; // Replace with your network password
-WiFiServer tcpServer(8080);
+
+WiFiServer tcpServer(5000);
 WiFiClient tcpClient;   // dùng khi ESP là client
 bool wasConnectedToServer = false;
 String tcpConfigServerIP = "192.168.3.165";
-uint16_t tcpConfigPort = 80;
+uint16_t tcpConfigPort = 8080;
 String tcpRole = "client";
 
-AsyncWebServer server(80);
+
+
+#include "WifiPostal.h" // Thư viện WifiPostal để tạo captive portal
+// AsyncWebServer server(80);
 // AsyncWebSocket ws("/ws");// nếu dùng WebSocket
-
-const char index_html[] PROGMEM = R"rawliteral(
-<!DOCTYPE HTML>
-<html>
-<head>
-  <title>ESP32 Web Server</title>
-  <meta charset="UTF-8">
-  <link rel="icon" href="data:,">
-  <script></script>
-</head>
-<body>
-  <h1>Hello from ESP32!</h1>
-  <p>Trang web này chạy trên ESP32.</p>
-  <div class="container">
-    <form action="/set_tcp_ip" method="POST">
-    <label>TCP Server IP:</label>
-    <input type="text" name="tcp_ip">
-    <label>TCP Server Port:</label>
-    <input type="number" name="tcp_port">
-    <label>TCP Role:</label>
-    <select name="tcp_role">
-      <option value="server">Server</option>
-      <option value="client">Client</option>
-    </select>
-    <label>My IP:</label>
-    <input type="text" name="my_ip">
-    <label>My Gateway:</label>
-    <input type="text" name="my_gw">
-    <label>My Subnet:</label>
-    <input type="text" name="my_sn">
-    <label>My DNS:</label>
-    <input type="text" name="my_dns">
-    <button type="submit">Lưu cấu hình</button>
-    </form>
-  </div>
-</body>
-</html>
-)rawliteral";
-
-// void ConsoleLog(const String &message) {
-//   ws.textAll(message); // Send message to all connected WebSocket clients
-//   Serial.println(message); // Send message to all connected WebSocket clients
-// } 
-
-// void ConsoleLog(const int8_t &message) {
-//   ws.textAll(String(message)); // Send message to all connected WebSocket clients
-//   Serial.println(String(message)); // Send message to all connected WebSocket clients
-// }  
-
-// void ConsoleLogln(const String &message) {
-//   ws.textAll(message); // Send message to all connected WebSocket clients
-//   Serial.println(message); // Send message to all connected WebSocket clients
-// }
-
-// void ConsoleLogln(const int &message) {
-//   Serial.println(String(message)); // Send message to all connected WebSocket clients
-//   ws.textAll(String(message)); // Send message to all connected WebSocket clients
-// }
-// void ConsoleLogf(const char *format, ...) {
-//   va_list args;
-//   va_start(args, format);
-//   char buffer[256];
-//   vsnprintf(buffer, sizeof(buffer), format, args);
-//   ws.textAll(buffer); // Send message to all connected WebSocket clients
-//   Serial.println(buffer); // Send message to all connected WebSocket clients
-//   va_end(args);
-// }
-
-// String wsMsg = "";
-// void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
-//   AwsFrameInfo *info = (AwsFrameInfo*)arg;
-//   if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
-//     for (size_t i = 0; i < len; i++) {
-//       wsMsg += (char) data[i];
-//     }
-//   }
-//   Serial.println("Received WebSocket message: " + wsMsg);
-//   ws.textAll("Received: " + wsMsg); // Gửi lại dữ liệu đã nhận
-//   serialHandler();
-// }
-
-// void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
-//   switch (type) {
-//     case WS_EVT_CONNECT:
-//       ConsoleLogf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
-//       break;
-//     case WS_EVT_DISCONNECT:
-//       ConsoleLogf("WebSocket client #%u disconnected\n", client->id());
-//       break;
-//     case WS_EVT_DATA:
-//       handleWebSocketMessage(arg, data, len);
-//       break;
-//     case WS_EVT_PONG:
-//     case WS_EVT_ERROR:
-//       break;
-//   }
-// }
-
-// void initWebSocket() {
-//   ConsoleLogln("Initializing WebSocket ...");
-//   ws.onEvent(onEvent);
-//   server.addHandler(&ws);
-// } 
-
-// StaticJsonDocument<200> parseClientJson(const String& msg) {
-//   StaticJsonDocument<200> doc;
-//   DeserializationError error = deserializeJson(doc, msg);
-//   StaticJsonDocument<200> result;
-//   if (!error) {
-//     result["role"] = doc["role"] | "";
-//     result["status"] = doc["status"] | "";
-//     result["data"] = doc["data"] | "";
-//     result["ip"] = doc["ip"] | "";
-//     result["port"] = doc["port"] | "";
-//   } else {
-//     result["role"] = "";
-//     result["status"] = "";
-//     result["data"] = "";
-//     result["ip"] = "";
-//     result["port"] = "";
-//   }
-//   return result;
-// }
-
-// void handleTCPServerResponse() {
-//   if (isTCPClientConnected && tcpClient.connected()) {
-//     while (tcpClient.available()) {
-//       String serverMsg = tcpClient.readStringUntil('\n');
-//       Serial.println("Received from server: " + serverMsg);
-//       StaticJsonDocument<200> doc1 = parseClientJson(serverMsg);
-//       String role = doc1["role"] | "";
-//       String status = doc1["status"] | "";
-//       String data = doc1["data"] | "";
-//       if (role == "server") {
-//         Serial.println("Server role confirmed");
-//         if (status == "disconnect") {
-//           Serial.println("Server requested disconnect");
-//           tcpClient.stop();
-//           isTCPClientConnected = false;
-//           Serial.println("Disconnected from server");
-//           return; // Thoát khỏi hàm nếu server yêu cầu ngắt kết nối
-//         } else if (data.length() > 0) {
-//           Serial.println("Server data: " + data);
-//         } else {
-//           Serial.println("No data received from server");
-//         }
-//       } else {
-//         Serial.println("Invalid role from server: " + role);
-//       }
-//       // Xử lý logic với serverMsg tại đây nếu muốn
-//     }
-//   }
-// }
-
-// void handleTCPclient() {//đọc tin nhắnn từ client
-//     if (!tcpServer) return; // Nếu server chưa được khởi tạo
-//     WiFiClient client = tcpServer->available(); // Kiểm tra xem có client nào kết nối hay không
-//     if (client) {
-//         Serial.println("New client connected");
-//         // Xử lý client kết nối
-//         while (client.connected()) {
-//             if (client.available()) {
-//               String msg = client.readStringUntil('\n');
-//               Serial.println("Received from client: " + msg);
-//               StaticJsonDocument<200> doc1 = parseClientJson(msg);
-//               String role = doc1["role"] | "";
-//               String status = doc1["status"] | "";
-//               String data = doc1["data"] | "";
-//               client.flush(); // Đảm bảo không còn dữ liệu trong buffer
-//               client.println("Received: " + msg); // Gửi lại dữ liệu đã nhận
-//               if (role == "client") {
-//                 if (status == "disconnect")
-//                 {
-//                   Serial.println("Client requested disconnect");
-//                   client.println("Disconnected by server");
-//                   break; // Thoát khỏi vòng lặp để ngắt kết nối client
-//                 }
-//                 else if (data.length() > 0)
-//                 {
-//                   Serial.println("Client data: " + data);
-//                   client.println("Server received: " + data);
-//                 }
-//                 else {
-//                   client.println("No data received");
-//                 }
-//               }
-//               else {
-//                 client.println("Invalid role");
-//               }
-//           }
-//         }
-//         if(!client) return;   
-//         Serial.println("Client disconnected");
-//         client.stop();     
-//     }
-//   }
-
-// void stopAndDeleteTCPServer() {
-//   if (tcpServer) {
-//     tcpServer->stop();
-//     delete tcpServer;
-//     tcpServer = nullptr;
-//     Serial.println("TCP Server stopped and deleted");
-//   }
-// }
 
 String msgSerial;
 String currentRole;
+int ClientBaudrate = 9600;
+
+void Network_event(WiFiEvent_t event)
+{
+  switch (event)
+  {
+    case ARDUINO_EVENT_ETH_START:
+      consolePrintln(F("\nETH Started"));
+      //set eth hostname here
+      #ifdef USE_ETHERNET
+      ETH.setHostname("ESP32_SC_W5500");
+      #endif// USE_ETHERNET
+      break;
+
+    case ARDUINO_EVENT_ETH_CONNECTED:
+      consolePrintln(F("ETH Connected"));
+      break;
+
+    case ARDUINO_EVENT_ETH_GOT_IP:
+    #ifdef USE_ETHERNET
+      if (!ESP32_W5500_eth_connected)
+      {
+        consolePrintf("ETH MAC: %s , IPv4: %s", ETH.macAddress(),  ETH.localIP().toString());
+
+        if (ETH.fullDuplex())
+        {
+          consolePrintln(F("FULL_DUPLEX, "));
+        }
+        else
+        {
+          consolePrintln(F("HALF_DUPLEX, "));
+        }
+        char ETHSpeed[16];
+        snprintf(ETHSpeed, sizeof(ETHSpeed), "%dMbps", ETH.linkSpeed());
+        consolePrintln(ETHSpeed);
+
+        ESP32_W5500_eth_connected = true;
+      }
+    #endif// USE_ETHERNET
+      break;
+
+    case ARDUINO_EVENT_ETH_DISCONNECTED:
+      consolePrintln("ETH Disconnected");
+      #ifdef USE_ETHERNET
+      ESP32_W5500_eth_connected = false;
+      #endif// USE_ETHERNET
+      break;
+
+    case ARDUINO_EVENT_ETH_STOP:
+      consolePrintln("\ETH Stopped");
+      #ifdef USE_ETHERNET
+      ESP32_W5500_eth_connected = false;
+      #endif// USE_ETHERNET
+      break;
+
+    default:
+      break;
+  }
+}
 
 // Nhận trạng thái từ Serial để xử lý role của tcp 
 void serialHandler() {
-  // Ưu tiên xử lý tin nhắn từ WebSocket nếu có
-  // if (wsMsg.length() > 0) {
-  //   msgSerial = wsMsg;
-  //   wsMsg = ""; // Đã xử lý xong, xóa đi
-  //   Serial.println("Received from WebSocket: " + msgSerial);
-  //   // ws.textAll("Received from WebSocket: " + msgSerial);
-  // } else {
     msgSerial = Serial.readStringUntil('\n');
-    Serial.println("Received from Serial: " + msgSerial);
-
+    consolePrintln("Received from Serial: " + msgSerial);
+#ifdef USE_TCP
     if (tcpRole == "client") {
       if (tcpClient.connected()) {
       tcpClient.println(msgSerial); // Gửi tin nhắn đến server TCP
-      Serial.println("Sent to TCP server: " + msgSerial);
+      consolePrintln("Sent to TCP server: " + msgSerial);
       MySerial1.println(msgSerial); // Gửi tin nhắn đến UART1
       } else {
-      Serial.println("Not connected to any TCP server.");
+      consolePrintln("Not connected to any TCP server.");
+      WARNING = true; // Đánh dấu có lỗi
       }
     } else if (tcpRole == "server") {
       if (tcpClient.connected()) {
         tcpClient.println(msgSerial); // Gửi tin nhắn đến client TCP
-        Serial.println("Sent to TCP client: " + msgSerial);
+        consolePrintln("Sent to TCP client: " + msgSerial);
         MySerial1.println(msgSerial); // Gửi tin nhắn đến UART1
       } else {
-        Serial.println("No TCP client connected.");
+        consolePrintln("No TCP client connected.");
+        WARNING = true; // Đánh dấu có lỗi
       }
     }
-    // ws.textAll("Received from Serial: " + msgSerial);
-  // } 
-  // if (msgSerial.startsWith("{") && msgSerial.endsWith("}")) {
-  //     // Đơn giản dùng ArduinoJson để parse (nên thêm thư viện ArduinoJson vào project)
-  //     StaticJsonDocument<200> obj = parseClientJson(msgSerial);       
-  //       String ip = obj["ip"] | "";
-  //       // String role = obj["role"] | "";
-  //       String role = "server"; // "server" hoặc "client"
-  //       // String status = obj["status"] | "";
-  //       String status = "connect"; // "connect" hoặc "disconnect"
-  //       // int port = String(obj["port"]| "").toInt() ;
-  //       int port = 8080; // Cổng kết nối, có thể thay đổi tùy ý
-  //       String data = obj["data"] | "";
-  //       Serial.println("Parsed JSON: role=" + role + ", status=" + status + ", ip=" + ip + ", port=" + String(port) + ", data=" + data);
-  //       if (role == "server") {
-  //         currentRole = "server";
-  //         Serial.println("Server IP: " + ip);
-  //         Serial.println("Server Port: " + port);
-  //         // stopAndDeleteTCPServer(); // Dừng và xóa server cũ nếu có
-  //         if(status == "connect"){
-  //           // Tạo server mới với cổng 8080
-  //           tcpServer = new WiFiServer(8080);
-  //           tcpServer->begin();
-  //           // Thiết lập client TCP
-  //           WiFiClient client = tcpServer->available();
-  //           Serial.println("i am TCP Server with port " + String(port != 0 ? port : 8080));
-  //           Serial.println("Server started");
-  //           Serial.println("Client received: " + msgSerial); // Gửi lại dữ liệu đã nhận
-  //           client.println("Client received: " + msgSerial); // Gửi lại dữ liệu đã nhận
-  //           if (client) {
-  //               client.println("Client received: " + msgSerial);
-  //           }
-  //         }
-  //         if(status == "disconnect") {
-  //           stopAndDeleteTCPServer(); // Dừng và xóa server cũ nếu có
-  //         }
-  //       } else if (role == "client") {
-  //       if (status == "connect") {
-  //         currentRole = "client";
-  //         Serial.println("Server IP: " + ip);
-  //         Serial.println("Server Port: " + port);
-  //         // Thiết lập client TCP
-  //         WiFiClient client;
-  //         // if (tcpClient.connect(ip.c_str(), port)) {
-  //         if (tcpClient.connect("191,168,1,9", 8080)) {
-  //           isTCPClientConnected = true;
-  //           Serial.println("Connected to server at " + ip + ":" + String(port));
-  //           client.println("i am TCP client");// Gửi thông điệp đến server
-  //         } else {
-  //           Serial.println("Connection failed");
-  //         }
-  //       } 
-  //       else if (status == "disconnect") {
-  //         if (tcpClient.connected()) {
-  //           tcpClient.stop();
-  //           isTCPClientConnected = false;
-  //           Serial.println("Disconnecting from server");
-  //         }
-  //       }      
-  //   }
-  // }
-// }
+  #endif//USE_TCP
 }
 
 void checkNewClient() {
-    WiFiClient newClient = tcpServer.available();
-    if (newClient) {
-        Serial.println("New client connected");
-        tcpClient = newClient;
+  #ifdef USE_TCP
+    if (!tcpClient.connected()) {
+        WiFiClient newClient = tcpServer.available();
+        if (newClient) {
+            consolePrintln("New client connected");
+            tcpClient = newClient;
+            WARNING = false; // Reset lỗi khi có client mới
+        }
     }
+    #endif//USE_TCP
 }
 
 void checkServerConnection() {
+  #ifdef USE_TCP
   if (tcpClient.connected()) {
     if (!wasConnectedToServer) {
-      Serial.println("Connected to server");
+      consolePrintln("Connected to server");
       wasConnectedToServer = true;
     }
   } else {
     if (wasConnectedToServer) {
-      Serial.println("Lost connection to server, reconnecting...");
+      consolePrintln("Lost connection to server, reconnecting...");
       wasConnectedToServer = false;
     }
     if (tcpClient.connect(tcpConfigServerIP.c_str(), tcpConfigPort)) {
-      Serial.println("Reconnected to server");
+      consolePrintln("Reconnected to server");
       wasConnectedToServer = true;
     } else {
       // Chỉ in thông báo thất bại khi vừa mất kết nối
       static unsigned long lastPrint = 0;
       if (millis() - lastPrint > 3000) {
-        Serial.println("Reconnect failed, will retry...");
+        consolePrintln("Reconnect failed, will retry...");
         lastPrint = millis();
+        // Nháy LED 2 lần để báo hiệu
+        // Blink LED 2 times without delay using millis()
+        static int blinkCount = 0;
+        static unsigned long lastBlink = 0;
+        static bool blinking = false;
+        if (!blinking) {
+          blinking = true;
+          blinkCount = 0;
+          lastBlink = millis();
+        }
+        if (blinking) {
+          if (millis() - lastBlink >= 200) {
+            if (blinkCount % 2 == 0) {
+              #ifdef USE_LEDPIXEL
+              pixels.setPixelColor(0, pixels.Color(0, 150, 100));
+              #endif// USE_LEDPIXEL
+            } else {
+              #ifdef USE_LEDPIXEL
+              pixels.setPixelColor(0, pixels.Color(0, 150, 0));
+              #endif// USE_LEDPIXEL
+            }
+            pixels.show();
+            lastBlink = millis();
+            blinkCount++;
+            if (blinkCount >= 4) {
+              blinking = false;
+            }
+          }
+        }
       }
     }
     delay(500); // Tránh spam kết nối quá nhanh
   }
+  #endif//USE_TCP
+}
+
+void saveTCPConfig() {
+  File file = LittleFS.open("/TCPconfig.json", "w");
+  if (!file) {
+    consolePrintln("Failed to open config file for writing");
+    return;
+  }
+
+  StaticJsonDocument<256> doc;
+  doc["enabled"] = TCPenabled;
+  doc["tcp_ip"] = tcpConfigServerIP;
+  doc["tcp_port"] = tcpConfigPort;
+  doc["tcp_role"] = tcpRole;
+  #ifdef USE_ETHERNET
+  doc["my_ip"] = myIP.toString();
+  doc["my_gw"] = myGW.toString();
+  doc["my_sn"] = mySN.toString();
+  doc["my_dns"] = myDNS.toString();
+  #endif// USE_ETHERNET
+  doc["baudrate"] = ClientBaudrate;
+
+  if (serializeJson(doc, file) == 0) {
+    consolePrintln("Failed to write JSON to file");
+  } else {
+    consolePrintln("Config saved to /TCPconfig.json");
+  }
+  file.close();
+}
+
+void loadTCPConfig() {
+  File file = LittleFS.open("/TCPconfig.json", "r");
+  if (!file) {
+    consolePrintln("No config file found, using defaults");
+    // Set default values
+    TCPenabled = true; // Mặc định bật TCP
+    tcpConfigServerIP = "192.168.1.254";
+    tcpConfigPort = 8080;
+    tcpRole = "client";
+    #ifdef USE_ETHERNET
+    myIP.fromString("192.168.1.253");
+    myGW.fromString("192.168.1.0");
+    mySN.fromString("255.255.255.0");
+    myDNS.fromString("8.8.8.8");
+    #endif// USE_ETHERNET
+    ClientBaudrate = 9600; // Default baudrate
+    return;
+  }
+
+  StaticJsonDocument<256> doc;
+  DeserializationError error = deserializeJson(doc, file);
+  if (error) {
+    consolePrintln("Failed to read config file, using defaults");
+    WARNING = true; // Đánh dấu có lỗi
+    file.close();
+    return;
+  }
+
+  if(doc.containsKey("enabled")) TCPenabled = doc["enabled"].as<bool>();
+  if (doc.containsKey("tcp_ip")) tcpConfigServerIP = doc["tcp_ip"].as<String>();
+  if (doc.containsKey("tcp_port")) tcpConfigPort = doc["tcp_port"].as<uint16_t>();
+  if (doc.containsKey("tcp_role")) tcpRole = doc["tcp_role"].as<String>();
+  #ifdef USE_ETHERNET
+  if (doc.containsKey("my_ip")) myIP.fromString(doc["my_ip"].as<String>());
+  if (doc.containsKey("my_gw")) myGW.fromString(doc["my_gw"].as<String>());
+  if (doc.containsKey("my_sn")) mySN.fromString(doc["my_sn"].as<String>());
+  if (doc.containsKey("my_dns")) myDNS.fromString(doc["my_dns"].as<String>());
+  #endif// USE_ETHERNET
+  if (doc.containsKey("baudrate")) {ClientBaudrate = doc["baudrate"].as<int>();}
+  file.close();
 }
 
 void saveConfig() {
-  File file = LittleFS.open("/config.txt", "w");
+  File file = LittleFS.open("/config.json", "w");
   if (!file) {
-    Serial.println("Failed to open config file for writing");
+    consolePrintln("Failed to open config file for writing");
     return;
   }
-  file.println(tcpConfigServerIP);
-  file.println(tcpConfigPort);
-  file.println(tcpRole);
-  file.println(myIP);
-  file.println(myGW);
-  file.println(mySN);
-  file.println(myDNS);
+
+  DynamicJsonDocument doc(1024);
+  ssid = "I-Soft"; // Replace with your network SSID
+  password = "i-soft@2023"; // Replace with your network password
+  doc["ssid"] = ssid;
+  doc["password"] = password;
+  
+  if (serializeJson(doc, file) == 0) {
+    consolePrintln("Failed to write JSON to file");
+  } else {
+    consolePrintln("Config saved to /config.json");
+  }
   file.close();
 }
 
 void loadConfig() {
-  File file = LittleFS.open("/config.txt", "r");
+  File file = LittleFS.open("/config.json", "r");
   if (!file) {
-    Serial.println("No config file found, using defaults");
+    consolePrintln("No config file found, using defaults");
     return;
   }
-  tcpConfigServerIP = file.readStringUntil('\n');
-  tcpConfigServerIP.trim();
-  tcpConfigPort = file.readStringUntil('\n').toInt();
-  tcpRole = file.readStringUntil('\n');
-  tcpRole.trim();
-  String ipStr = file.readStringUntil('\n');
-  myIP.fromString(ipStr);
-  String gwStr = file.readStringUntil('\n');
-  myGW.fromString(gwStr);
-  String snStr = file.readStringUntil('\n');
-  mySN.fromString(snStr);
-  String dnsStr = file.readStringUntil('\n');
-  myDNS.fromString(dnsStr);
+
+  DynamicJsonDocument doc(1024);
+  DeserializationError error = deserializeJson(doc, file);
+  if (error) {
+    consolePrintln("Failed to read config file, using defaults");
+    WARNING = true; // Đánh dấu có lỗi
+    file.close();
+    return;
+  }
+
+  // Load your configuration parameters here
+  // Example: myParameter = doc["myParameter"].as<String>();
+
   file.close();
 }
 
-void setup() {
-  if (!LittleFS.begin()) {
-    Serial.println("LittleFS Mount Failed");
-  }
-  loadConfig(); //đọc cấu hình từ file
 
-  delay(5000);
+void setup() {
+  // delay(10000);
+  #ifdef USE_LEDPIXEL
+  pixels.begin(); 
+  pixels.clear();
+  #endif// USE_LEDPIXEL
 
   Serial.begin(115200);
-  MySerial1.begin(9600, SERIAL_8N1, 2, 7);
+  #ifdef USE_TCP
+  MySerial1.begin(ClientBaudrate, SERIAL_8N1, 2, 7);
+  #endif// UART1
+  WiFi.onEvent(Network_event);
 
-  Serial.println(tcpConfigServerIP);
-  Serial.println(tcpConfigPort);
-  Serial.println(tcpRole);
-  Serial.println(myIP);
-  Serial.println(myGW);
-  Serial.println(mySN);
-  Serial.println(myDNS);
+  if (!LittleFS.begin()) {
+    consolePrintln("LittleFS Mount Failed");
+    consolePrintln("Formatting LittleFS...");
+      #ifdef USE_LEDPIXEL 
+      pixels.setPixelColor(0, pixels.Color(255, 200, 0));pixels.show();
+      #endif// USE_LEDPIXEL
+    if (!LittleFS.format()) {
+      consolePrintln("Failed to format LittleFS");
+      #ifdef USE_LEDPIXEL
+      pixels.setPixelColor(0, pixels.Color(255, 0, 0));pixels.show();  
+      #endif// USE_LEDPIXEL
+      ERROR = true; // Đánh dấu có lỗi nghiêm trọng
+      return;
+    } else {
+      consolePrintln("LittleFS formatted successfully");
+      #ifdef USE_LEDPIXEL
+      pixels.setPixelColor(0, pixels.Color(10, 200, 0));pixels.show();
+      #endif// USE_LEDPIXEL
+      ERROR = WARNING = false; // Reset lỗi
+    }
+  }
 
+#ifdef USE_TCP
+  loadTCPConfig();
+#endif//USE_TCP 
+  #ifdef USE_LEDPIXEL
+  pixels.setPixelColor(0, pixels.Color(0, 150, 0));
+  pixels.show();   
+  #endif// USE_LEDPIXEL
+#ifdef USE_ETHERNET
+  consolePrintln("======================================");
+  consolePrintln("Server IP: " + tcpConfigServerIP);
+  consolePrintln("Server Port: " + String(tcpConfigPort));
+  consolePrintln("TCP Role: " + tcpRole);
+  consolePrintln("My IP: " + myIP.toString());
+  consolePrintln("My Gateway: " + myGW.toString());
+  consolePrintln("My Subnet: " + mySN.toString());
+  consolePrintln("My DNS: " + myDNS.toString());
+  consolePrintln("Client Baudrate: " + String(ClientBaudrate));
+  consolePrintln("======================================");
+#endif//USE_ETHERNET
+#ifndef USE_WIFI_AP
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(1000);
-    Serial.println("Connecting to WiFi...");
+    consolePrintln("Connecting to WiFi...");
   }
   // ws.textAll("Connected to WiFi");
-  Serial.println("Connected to WiFi");
-  Serial.println(WiFi.localIP());
+  consolePrintln("Connected to WiFi");
+  consolePrintln(WiFi.localIP().toString());
+  #endif//USE_WIFI_AP
   
+  #ifdef USE_LEDPIXEL
+  pixels.setPixelColor(0, pixels.Color(0, 0, 150));
+  pixels.show();   // Send the updated pixel colors to the hardware.
+  #endif// USE_LEDPIXEL
+  WiFiUDP udp;
+  udp.begin(5000); 
+
+  #ifdef USE_WIFI_AP
+  WiFi_AP_setup();
+  #endif//USE_WIFI_AP  
+
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
       request->send_P(200, "text/html", index_html);
   });
@@ -473,105 +537,256 @@ void setup() {
     tcpConfigServerIP = request->getParam("tcp_ip", true)->value();
     tcpConfigPort = request->getParam("tcp_port", true)->value().toInt();
     tcpRole = request->getParam("tcp_role", true)->value();
+    #ifdef USE_ETHERNET
     myIP.fromString(request->getParam("my_ip", true)->value());
     myGW.fromString(request->getParam("my_gw", true)->value());
     mySN.fromString(request->getParam("my_sn", true)->value());
     myDNS.fromString(request->getParam("my_dns", true)->value());
-    saveConfig(); //Lưu cấu hình vào file
+    #endif // USE_ETHERNET
+    ClientBaudrate = request->getParam("baudrate", true)->value().toInt();
+    saveTCPConfig(); //Lưu cấu hình vào file
+    #ifdef USE_LEDPIXEL
+    pixels.setPixelColor(0, pixels.Color(150, 150, 150));
+    pixels.show();   // Send the updated pixel colors to the hardware.
+    #endif// USE_LEDPIXEL
     if (tcpRole == "server") {
-      tcpServer.begin();
-      Serial.println("TCP Server started at port " + String(tcpConfigPort));
-    } else if (tcpRole == "client") {
-      Serial.println("Cau hinh moi: " + tcpConfigServerIP + ":" + String(tcpConfigPort));
-      if (tcpClient.connect(tcpConfigServerIP.c_str(), tcpConfigPort)) {
-          Serial.println("Connected to server at " + tcpConfigServerIP + ":" + String(tcpConfigPort));
-      } else {
-          Serial.println("Connection failed");
+      if (!serverStarted) {
+          consolePrintln("Starting TCP server on port " + String(tcpConfigPort));
+          tcpServer.begin();
+          serverStarted = true;
+          #ifdef USE_LEDPIXEL
+          pixels.setPixelColor(0, pixels.Color(0, 150, 0));
+          pixels.show();
+          #endif // USE_LEDPIXEL
       }
-      request->send(200, "text/plain", "Da nhan cau hinh: " + tcpConfigServerIP + ":" + String(tcpConfigPort));
+    } else if (tcpRole == "client") {
+      consolePrintln("Cau hinh moi: " + tcpConfigServerIP + ":" + String(tcpConfigPort));
+      if (tcpClient.connect(tcpConfigServerIP.c_str(), tcpConfigPort)) {
+          consolePrintln("Connected to server at " + tcpConfigServerIP + ":" + String(tcpConfigPort));
+      } else {
+          consolePrintln("Connection failed");
+      }
     }
+    request->send(200, "text/plain", "Da nhan cau hinh: " + tcpConfigServerIP + ":" + String(tcpConfigPort));
+  });
+  server.on("/console", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/html", index_console);
+  });
+// Gửi API reset sau 5s
+      server.on("/api/reset", HTTP_GET, [](AsyncWebServerRequest *req){
+        req->send(200, "text/plain", "ESP will reset in 5 seconds");
+        // Đặt hẹn giờ reset sau 5s
+        static bool resetScheduled = false;
+        if (!resetScheduled) {
+          resetScheduled = true;
+          // Dùng task để delay không block
+          xTaskCreate([](void*){
+        vTaskDelay(5000 / portTICK_PERIOD_MS);
+        ESP.restart();
+          }, "ResetTask", 2048, nullptr, 1, nullptr);
+        }
+      });
+  server.on("/loadTCPconfig", HTTP_GET, [](AsyncWebServerRequest *request){
+    StaticJsonDocument<256> doc;
+    doc["tcp_ip"] = tcpConfigServerIP;
+    doc["tcp_port"] = tcpConfigPort;
+    doc["tcp_role"] = tcpRole;
+    #ifdef USE_ETHERNET
+    doc["my_ip"] = myIP.toString();
+    doc["my_gw"] = myGW.toString();
+    doc["my_sn"] = mySN.toString();
+    doc["my_dns"] = myDNS.toString();
+    #endif // USE_ETHERNET
+    doc["baudrate"] = ClientBaudrate;
+    String json;
+    serializeJson(doc, json);
+    request->send(200, "application/json", json);
   });
 
+    ALC_setup(server); // Khởi tạo ALC Project
+    
+  // Khởi tạo WebSocket cho console
+  wsConsole.onEvent(onWsConsoleEvent);
+  server.addHandler(&wsConsole);
   server.begin();
 
-  // tcpServer = new WiFiServer(8080);
-  // tcpServer->begin();
-  // To be called before ETH.begin()
-  ESP32_W5500_onEvent();
+  // AsyncElegantOTA.begin(&server);
+  // consolePrintln("OTA Update enabled at /update");
+#ifdef USE_ETHERNET
+  // ESP32_W5500_onEvent();
 
-  // start the ethernet connection and the server:
-  // Use DHCP dynamic IP and random mac
-  uint16_t index = millis() % NUMBER_OF_MAC;
 
-  //bool begin(int MISO_GPIO, int MOSI_GPIO, int SCLK_GPIO, int CS_GPIO, int INT_GPIO, int SPI_CLOCK_MHZ,
-  //           int SPI_HOST, uint8_t *W5500_Mac = W5500_Default_Mac);
-  //ETH.begin( MISO_GPIO, MOSI_GPIO, SCK_GPIO, CS_GPIO, INT_GPIO, SPI_CLOCK_MHZ, ETH_SPI_HOST );
-  bool ethStatus = false;
-  while (!ethStatus) {
-    Serial.print("Connecting to Ethernet: ");
-    ethStatus = ETH.begin( MISO_GPIO, MOSI_GPIO, SCK_GPIO, CS_GPIO, INT_GPIO, SPI_CLOCK_MHZ, ETH_SPI_HOST, mac[index] );
-    delay(1000);
-  }
-  
-  // Static IP, leave without this line to get IP via DHCP
-  //bool config(IPAddress local_ip, IPAddress gateway, IPAddress subnet, IPAddress dns1 = 0, IPAddress dns2 = 0);
-  ETH.config(myIP, myGW, mySN, myDNS);
+  // // start the ethernet connection and the server:
+  // // Use DHCP dynamic IP and random mac
+  // uint16_t index = millis() % NUMBER_OF_MAC;
+  //   consolePrintln("Connecting to Ethernet: ");
+  //   if(ETH.begin( MISO_GPIO, MOSI_GPIO, SCK_GPIO, CS_GPIO, INT_GPIO, SPI_CLOCK_MHZ, ETH_SPI_HOST, mac[index] )){
+  //     consolePrintln("Ethernet connected with MAC: " + ETH.macAddress());
+  //     pixels.setPixelColor(0, pixels.Color(0, 150, 0));pixels.show();  
+  //   }else{
+  //     ERROR = true; // Đánh dấu có lỗi nghiêm trọng
+  //     WARNING = false;
+  //   }
+  //   delay(1000);
+  // // }
 
-  // Serial.print(F("HTTP EthernetWebServer is @ IP : "));
-  // Serial.println(ETH.localIP());
-  ESP32_W5500_waitForConnect();
-
+  //   ETH.config(myIP, myGW, mySN, myDNS);
+  // // In ra địa chỉ IP Ethernet lên Serial và lưu vào consoleBuffer
+  // consolePrintln("Ethernet IP: " + ETH.localIP().toString());
+  // // ESP32_W5500_waitForConnect();
+#endif // USE_ETHERNET
   ///////////////////////////////////
-  // ETHserver.on(F("/"), handleRoot);
-  // ETHserver.on(F("/test.svg"), drawGraph);
-  // ETHserver.on(F("/inline"), []()
-  // {`
-  //   ETHserver.send(200, F("text/plain"), F("This works as well"));
-  // });
-  // // ETHserver.onNotFound(handleNotFound);
-
+#ifdef USE_TCP
+if(TCPenabled) {
+  consolePrintln("TCP enabled, starting configuration...");
   if (tcpRole == "server") {
-    tcpServer.begin();
+    if (!serverStarted) {
+        consolePrintln("Starting TCP server on port " + String(tcpConfigPort));
+        tcpServer.begin();
+        serverStarted = true;
+        #ifdef USE_LEDPIXEL
+        pixels.setPixelColor(0, pixels.Color(0, 150, 0));
+        pixels.show();
+        #endif // USE_LEDPIXEL
+    }
   } else if (tcpRole == "client") {
     // Thiết lập client TCP
-    if (tcpClient.connect(tcpConfigServerIP.c_str(), tcpConfigPort)) {
-      Serial.println("Connected to server at " + tcpConfigServerIP + ":" + String(tcpConfigPort));
-    } else {
-      Serial.println("Connection failed");
+    consolePrintln("Connecting to server at " + tcpConfigServerIP + ":" + String(tcpConfigPort));
+    int retry = 0;
+    const int maxRetry = 5;
+    while (!tcpClient.connected() && retry < maxRetry) {
+      if (tcpClient.connect(tcpConfigServerIP.c_str(), tcpConfigPort)) {
+        consolePrintln("Connected to server at " + tcpConfigServerIP + ":" + String(tcpConfigPort));
+        #ifdef USE_LEDPIXEL
+        pixels.setPixelColor(0, pixels.Color(0, 150, 150));
+        pixels.show();   // Send the updated pixel colors to the hardware.
+        #endif // USE_LEDPIXEL
+        break;
+      } else {
+        consolePrintln("Connection failed, retrying...");
+        #ifdef USE_LEDPIXEL
+        pixels.setPixelColor(0, pixels.Color(0, 150, 100));
+        pixels.show();   // Send the updated pixel colors to the hardware.
+        #endif// USE_LEDPIXEL
+        delay(500);
+        retry++;
+        #ifdef USE_LEDPIXEL
+        pixels.setPixelColor(0, pixels.Color(0, 150, 0));
+        pixels.show();   // Send the updated pixel colors to the hardware.
+        #endif // USE_LEDPIXEL
+        delay(500);
+      }
+    }
+    if (!tcpClient.connected()) {
+      consolePrintln("Could not connect to server after retries.");
     }
   }
 
-  // Serial.print(F("HTTP EthernetWebServer is @ IP : "));
-  // Serial.println(ETH.localIP());
 }
+#endif // USE_TCP
+  ///////////////////////////////////
 
-void loop() {
-  if (tcpRole == "server") {
-    checkNewClient();
-  } else {
-    checkServerConnection(); 
-  }
-
-  if (Serial.available() > 0) {
-    serialHandler();
-  }
-
-  if (MySerial1.available()) {
-    int c = MySerial1.read();
-    MySerial1.write(c); // Gửi sang UART1
-    Serial.write(c); // Gửi sang Serial
-    if (tcpRole == "server" && tcpClient.connected()) {
-      tcpClient.write(c); // Gửi sang client TCP nếu có kết nối
-    } else if (tcpRole == "client" && wasConnectedToServer) {
-      tcpClient.write(c); // Gửi sang server TCP nếu có kết nối
+    setup_ledPanel();
+    if (!dma_display || !virtualDisp) {
+    Serial.println("Panel not initialized!");
+    return;
     }
-  }
+    
 
-  if(tcpClient.available()) {
-    int c = tcpClient.read();
-    Serial.write(c); // Gửi sang Serial
-    MySerial1.write(c); // Gửi sang UART1
+    Serial.println("Ram :" + String(ESP.getFreeHeap()/1024 )+ " KB");
+
+  Serial.println("Ram :" + String(ESP.getFreeHeap()/1024) + " KB");
+    consolePrintln("Setup completed");
+    initPSRAM(); // Khởi tạo PSRAM nếu có
+    #ifdef USE_LEDPIXEL
+    pixels.setPixelColor(0, pixels.Color(0, 150, 0));pixels.show();   // Send the updated pixel colors to the hardware.
+    #endif // USE_LEDPIXEL
+  }//setup
+
+uint8_t wheelval = 0;
+void loop() {
+    // Blink green LED (pixel 0) without delay using millis() nếu không lỗi
+    static unsigned long lastBlinkTime = 0;
+    static bool ledOn = false;
+    const unsigned long blinkInterval = 200; // ms
+    
+      if (millis() - lastBlinkTime >= blinkInterval) {
+      lastBlinkTime = millis();
+      // Serial.println("Ram :" + String(ESP.getFreeHeap()/1024) + " KB");
+
+      ledOn = !ledOn;
+      if (ledOn) {
+        #ifdef USE_LEDPIXEL
+        if (!WARNING & !ERROR) {
+          pixels.setPixelColor(0, pixels.Color(0, 150, 0)); // LED xanh lá
+        } else if (WARNING) {
+          pixels.setPixelColor(0, pixels.Color(255, 200, 0)); // LED cam nếu có lỗi
+        } else if (ERROR) { WARNING = false;
+          pixels.setPixelColor(0, pixels.Color(255, 0, 0)); // LED đỏ nếu có lỗi
+        } else {
+          pixels.setPixelColor(0, pixels.Color(0, 150, 0)); 
+        }
+        #endif // USE_LEDPIXEL
+      } else {
+        #ifdef USE_LEDPIXEL
+        pixels.setPixelColor(0, 0, 0, 0);
+        #endif // USE_LEDPIXEL
+      }
+        #ifdef USE_LEDPIXEL
+        pixels.show();
+        #endif // USE_LEDPIXEL
+      }
+
+    drawText(wheelval);
+    wheelval +=1;
+
+    delay(200); 
+// if(TCPenabled){
+//   if (tcpRole == "server") {
+//     checkNewClient();
+//   } else {
+//     checkServerConnection(); 
+//   }
+
+//   if (Serial.available() > 0) {
+//     serialHandler();
+//   }
+
+//   if (MySerial1.available()) {
+//     int c = MySerial1.read();
+//     MySerial1.write(c); // Gửi sang UART1
+//     Serial.write(c); // Gửi sang Serial
+//     if (tcpRole == "server" && tcpClient.connected()) {
+//       tcpClient.write(c); // Gửi sang client TCP nếu có kết nối
+//     } else if (tcpRole == "client" && wasConnectedToServer) {
+//       tcpClient.write(c); // Gửi sang server TCP nếu có kết nối
+//     }
+//   }
+
+//   if(tcpClient.available()) {
+//     int c = tcpClient.read();
+//     Serial.write(c); // Gửi sang Serial
+//     MySerial1.write(c); // Gửi sang UART1
+//     if (socketConnected) {
+//       wsConsole.textAll(String((char)c)); // Gửi dữ liệu đến WebSocket console
+//     }
+//   }
+// }
+  // WiFi_AP_loop(); // Đã chuyển sang task riêng
+
+  // Tạo task riêng cho WiFi_AP_loop nếu chưa tạo
+  #ifdef USE_WIFI_AP
+  static bool wifiTaskStarted = false;
+  if (!wifiTaskStarted) {
+    wifiTaskStarted = true;
+    xTaskCreate([](void*) {
+      while (true) {
+        WiFi_AP_loop();
+        vTaskDelay(10 / portTICK_PERIOD_MS); // tránh chiếm CPU
+      }
+    }, "WiFiAPLoopTask", 8096, nullptr, 1, nullptr);
   }
+  #endif//USE_WIFI_AP
 }
 
   // handleTCPclient();
