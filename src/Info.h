@@ -401,29 +401,29 @@ void handleInfo(AsyncWebServerRequest *request) {
   request->send(200, "application/json", json);
 }
 
+void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len){
+  if (type == WS_EVT_DATA && len > 0) {
+    String msg = String((char*)data).substring(0, len);
+    if (msg.startsWith("cycletime:")) {
+      uint32_t t = msg.substring(10).toInt();
+      if (t >= 100 && t <= 60000) {
+        infoCycleTime = t;
+        saveInfoCycleTime();
+      }
+    }
+  }
+}
+
 
 void setupInfoSocketAndTimer(AsyncWebServer *server) {
   loadInfoCycleTime();
-  wsInfo.onEvent([](AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
-    // Có thể xử lý nhận cycletime mới qua websocket nếu muốn
-    if (type == WS_EVT_DATA && len > 0) {
-      String msg = String((char*)data).substring(0, len);
-      if (msg.startsWith("cycletime:")) {
-        uint32_t t = msg.substring(10).toInt();
-        if (t >= 100 && t <= 60000) {
-          infoCycleTime = t;
-          saveInfoCycleTime();
-        }
-      }
-    }
-  });
-  server.addHandler(&wsInfo);
+  wsInfo.onEvent(onWsEvent);
+
+    server->addHandler(&wsInfo);
     // Đăng ký API REST
     server->on("/api/info", HTTP_GET, handleInfo);
     // Đăng ký trang Info
     server->on("/info", HTTP_GET, InfoPage);
-    // Gọi trong setup:
-     setupInfoSocketAndTimer();
     // Call this in setup
      initResetCount();
      sendInfoJson();

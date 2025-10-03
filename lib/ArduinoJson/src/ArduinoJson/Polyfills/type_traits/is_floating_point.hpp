@@ -1,5 +1,5 @@
 // ArduinoJson - https://arduinojson.org
-// Copyright © 2014-2025, Benoit BLANCHON
+// Copyright © 2014-2022, Benoit BLANCHON
 // MIT License
 
 #pragma once
@@ -8,12 +8,13 @@
 #include "is_same.hpp"
 #include "remove_cv.hpp"
 
-ARDUINOJSON_BEGIN_PRIVATE_NAMESPACE
+namespace ARDUINOJSON_NAMESPACE {
 
 template <class T>
 struct is_floating_point
-    : integral_constant<bool,  //
-                        is_same<float, remove_cv_t<T>>::value ||
-                            is_same<double, remove_cv_t<T>>::value> {};
+    : integral_constant<
+          bool,  //
+          is_same<float, typename remove_cv<T>::type>::value ||
+              is_same<double, typename remove_cv<T>::type>::value> {};
 
-ARDUINOJSON_END_PRIVATE_NAMESPACE
+}  // namespace ARDUINOJSON_NAMESPACE

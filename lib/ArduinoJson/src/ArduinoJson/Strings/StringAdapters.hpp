@@ -1,21 +1,34 @@
 // ArduinoJson - https://arduinojson.org
-// Copyright © 2014-2025, Benoit BLANCHON
+// Copyright © 2014-2022, Benoit BLANCHON
 // MIT License
 
 #pragma once
 
 #include <ArduinoJson/Polyfills/type_traits.hpp>
+#include <ArduinoJson/Strings/Adapters/JsonString.hpp>
 #include <ArduinoJson/Strings/Adapters/RamString.hpp>
-#include <ArduinoJson/Strings/Adapters/StringObject.hpp>
+
+#if ARDUINOJSON_ENABLE_STD_STRING
+#  include <ArduinoJson/Strings/Adapters/StdString.hpp>
+#endif
+
+#if ARDUINOJSON_ENABLE_STRING_VIEW
+#  include <ArduinoJson/Strings/Adapters/StringView.hpp>
+#endif
+
+#if ARDUINOJSON_ENABLE_ARDUINO_STRING
+#  include <ArduinoJson/Strings/Adapters/ArduinoString.hpp>
+#endif
 
 #if ARDUINOJSON_ENABLE_PROGMEM
 #  include <ArduinoJson/Strings/Adapters/FlashString.hpp>
 #endif
 
-ARDUINOJSON_BEGIN_PRIVATE_NAMESPACE
+namespace ARDUINOJSON_NAMESPACE {
 
 template <typename TAdaptedString1, typename TAdaptedString2>
-enable_if_t<TAdaptedString1::typeSortKey <= TAdaptedString2::typeSortKey, int>
+typename enable_if<TAdaptedString1::typeSortKey <= TAdaptedString2::typeSortKey,
+                   int>::type
 stringCompare(TAdaptedString1 s1, TAdaptedString2 s2) {
   ARDUINOJSON_ASSERT(!s1.isNull());
   ARDUINOJSON_ASSERT(!s2.isNull());
@@ -34,13 +47,15 @@ stringCompare(TAdaptedString1 s1, TAdaptedString2 s2) {
 }
 
 template <typename TAdaptedString1, typename TAdaptedString2>
-enable_if_t<(TAdaptedString1::typeSortKey > TAdaptedString2::typeSortKey), int>
+typename enable_if<
+    (TAdaptedString1::typeSortKey > TAdaptedString2::typeSortKey), int>::type
 stringCompare(TAdaptedString1 s1, TAdaptedString2 s2) {
   return -stringCompare(s2, s1);
 }
 
 template <typename TAdaptedString1, typename TAdaptedString2>
-enable_if_t<TAdaptedString1::typeSortKey <= TAdaptedString2::typeSortKey, bool>
+typename enable_if<TAdaptedString1::typeSortKey <= TAdaptedString2::typeSortKey,
+                   bool>::type
 stringEquals(TAdaptedString1 s1, TAdaptedString2 s2) {
   ARDUINOJSON_ASSERT(!s1.isNull());
   ARDUINOJSON_ASSERT(!s2.isNull());
@@ -56,7 +71,8 @@ stringEquals(TAdaptedString1 s1, TAdaptedString2 s2) {
 }
 
 template <typename TAdaptedString1, typename TAdaptedString2>
-enable_if_t<(TAdaptedString1::typeSortKey > TAdaptedString2::typeSortKey), bool>
+typename enable_if<
+    (TAdaptedString1::typeSortKey > TAdaptedString2::typeSortKey), bool>::type
 stringEquals(TAdaptedString1 s1, TAdaptedString2 s2) {
   return stringEquals(s2, s1);
 }
@@ -69,4 +85,4 @@ static void stringGetChars(TAdaptedString s, char* p, size_t n) {
   }
 }
 
-ARDUINOJSON_END_PRIVATE_NAMESPACE
+}  // namespace ARDUINOJSON_NAMESPACE

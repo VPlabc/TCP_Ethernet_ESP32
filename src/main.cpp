@@ -10,6 +10,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include <HardwareSerial.h>
@@ -86,6 +87,21 @@ const size_t MAX_CONSOLE_LINES = 200;
 #include "esp_heap_caps.h"
 
 
+// Khai báo đối tượng UART
+#ifdef USE_TCP
+  HardwareSerial MySerial1(1); // UART1
+#endif//USE_TCP
+
+const char *ssid = "I-Soft";          // Replace with your network SSID
+const char *password = "i-soft@2023"; // Replace with your network password
+
+WiFiServer *tcpServer = nullptr;
+WiFiClient tcpClient;   // dùng khi ESP là client
+bool wasConnectedToServer = false;
+String tcpConfigServerIP = "192.168.3.165";
+uint16_t tcpConfigPort = 8080;
+String tcpRole = "client";
+
 void consolePrintln(const String& line);
 void consolePrintf(const char* format, ...);
 
@@ -114,7 +130,10 @@ void addConsoleLine(const String& line) {
   }
 }
 
- 
+void consolePrintln(const String &msg) {
+  Serial.println(msg); // Hoặc thêm timestamp, màu, ... nếu cần
+  addConsoleLine(String(msg));
+}
 
 void consolePrintf(const char* format, ...) {
   char buf[256];
@@ -157,28 +176,20 @@ void onWsConsoleEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsE
     // Không cần xử lý dữ liệu từ client, chỉ gửi dữ liệu console
     Serial1.write(data, len); // Ghi dữ liệu nhận được từ client vào Serial1
     consolePrintln("Received from console WebSocket: " + String((char*)data, len));
+    tcpClient.write(data, len); // Ghi dữ liệu nhận được từ client vào TCP client
+
   }
 }
 
-// Khai báo đối tượng UART
-#ifdef USE_TCP
-  HardwareSerial MySerial1(0); // UART1
-#endif//USE_TCP
-
-const char *ssid = "I-Soft";          // Replace with your network SSID
-const char *password = "i-soft@2023"; // Replace with your network password
-
-WiFiServer tcpServer(5000);
-WiFiClient tcpClient;   // dùng khi ESP là client
-bool wasConnectedToServer = false;
-String tcpConfigServerIP = "192.168.3.165";
-uint16_t tcpConfigPort = 8080;
-String tcpRole = "client";
 
 
 
 #include "WifiPostal.h" // Thư viện WifiPostal để tạo captive portal
+
+#ifdef USE_INFO
 #include "Info.h" // Thư viện Info để quản lý thông tin hệ thống
+#endif//USE_INFO
+
 // AsyncWebServer server(80);
 // AsyncWebSocket ws("/ws");// nếu dùng WebSocket
 
@@ -274,7 +285,8 @@ void serialHandler() {
 void checkNewClient() {
   #ifdef USE_TCP
     if (!tcpClient.connected()) {
-        WiFiClient newClient = tcpServer.available();
+      
+        WiFiClient newClient = tcpServer->available();
         if (newClient) {
             consolePrintln("New client connected");
             tcpClient = newClient;
@@ -348,7 +360,7 @@ void saveTCPConfig() {
     return;
   }
 
-  StaticJsonDocument<256> doc;
+  StaticJsonDocument<500> doc;
   doc["enabled"] = TCPenabled;
   doc["tcp_ip"] = tcpConfigServerIP;
   doc["tcp_port"] = tcpConfigPort;
@@ -361,6 +373,10 @@ void saveTCPConfig() {
   #endif// USE_ETHERNET
   doc["baudrate"] = ClientBaudrate;
 
+  Serial.println("[TCP CONFIG SAVE]");
+  serializeJsonPretty(doc, Serial);
+  Serial.println();
+  
   if (serializeJson(doc, file) == 0) {
     consolePrintln("Failed to write JSON to file");
   } else {
@@ -387,8 +403,7 @@ void loadTCPConfig() {
     ClientBaudrate = 9600; // Default baudrate
     return;
   }
-
-  StaticJsonDocument<256> doc;
+  StaticJsonDocument<512> doc;
   DeserializationError error = deserializeJson(doc, file);
   if (error) {
     consolePrintln("Failed to read config file, using defaults");
@@ -408,6 +423,10 @@ void loadTCPConfig() {
   if (doc.containsKey("my_dns")) myDNS.fromString(doc["my_dns"].as<String>());
   #endif// USE_ETHERNET
   if (doc.containsKey("baudrate")) {ClientBaudrate = doc["baudrate"].as<int>();}
+  consolePrintln("TCPenb:" + String(TCPenabled) + ", IP: " + tcpConfigServerIP + 
+               ", Port: " + String(tcpConfigPort) + ", Role: " + tcpRole + " | TCP IP: " + myIP.toString() +
+               ", GW: " + myGW.toString() + ", SN: " + mySN + " | Baudrate: " + String(ClientBaudrate));
+  consolePrintln("Loaded TCP config from /TCPconfig.json");
   file.close();
 }
 
@@ -500,6 +519,8 @@ void setup() {
 #ifdef USE_TCP
   loadTCPConfig();
 #endif//USE_TCP 
+  tcpServer = new WiFiServer(tcpConfigPort);
+
   #ifdef USE_LEDPIXEL
   pixels.setPixelColor(0, pixels.Color(0, 150, 0));
   pixels.show();   
@@ -531,8 +552,8 @@ void setup() {
   pixels.setPixelColor(0, pixels.Color(0, 0, 150));
   pixels.show();   // Send the updated pixel colors to the hardware.
   #endif// USE_LEDPIXEL
-  WiFiUDP udp;
-  udp.begin(5000); 
+  // WiFiUDP udp;
+  // udp.begin(5000); 
 
   #ifdef USE_WIFI_AP
   WiFi_AP_setup();
@@ -548,6 +569,7 @@ void setup() {
   });
 
   server.on("/set_tcp_ip", HTTP_POST, [](AsyncWebServerRequest *request){
+    TCPenabled = request->getParam("enabled", true)->value();
     tcpConfigServerIP = request->getParam("tcp_ip", true)->value();
     tcpConfigPort = request->getParam("tcp_port", true)->value().toInt();
     tcpRole = request->getParam("tcp_role", true)->value();
@@ -563,11 +585,13 @@ void setup() {
     pixels.setPixelColor(0, pixels.Color(150, 150, 150));
     pixels.show();   // Send the updated pixel colors to the hardware.
     #endif// USE_LEDPIXEL
-    updateInfoSocket(tcpRole, tcpConfigPort, GetServerPort(), myIP, myGW, mySN, myDNS, ClientBaudrate);
-    if (tcpRole == "server") {
+    #ifdef USE_INFO
+      updateInfoSocket(tcpRole, tcpConfigPort, GetServerPort(), myIP, myGW, mySN, myDNS, ClientBaudrate);
+    #endif//USE_INFO
+      if (tcpRole == "server") {
       if (!serverStarted) {
-          consolePrintln("Starting TCP server on port " + String(tcpConfigPort));
-          tcpServer.begin();
+          consolePrintln("Starting TCP server on port " + String(tcpConfigPort));          
+          tcpServer->begin();
           serverStarted = true;
           #ifdef USE_LEDPIXEL
           pixels.setPixelColor(0, pixels.Color(0, 150, 0));
@@ -603,6 +627,7 @@ void setup() {
       });
   server.on("/loadTCPconfig", HTTP_GET, [](AsyncWebServerRequest *request){
     StaticJsonDocument<256> doc;
+    doc["enabled"] = TCPenabled;
     doc["tcp_ip"] = tcpConfigServerIP;
     doc["tcp_port"] = tcpConfigPort;
     doc["tcp_role"] = tcpRole;
@@ -631,14 +656,16 @@ void setup() {
   consolePrintln("OTA Update enabled at /update");
 
 #ifdef USE_ETHERNET
-  // ESP32_W5500_onEvent();
+  ESP32_W5500_onEvent();
   // start the ethernet connection and the server:
   // Use DHCP dynamic IP and random mac
   uint16_t index = millis() % NUMBER_OF_MAC;
     consolePrintln("Connecting to Ethernet: ");
     if(ETH.begin( MISO_GPIO, MOSI_GPIO, SCK_GPIO, CS_GPIO, INT_GPIO, SPI_CLOCK_MHZ, ETH_SPI_HOST, mac[index] )){
       consolePrintln("Ethernet connected with MAC: " + ETH.macAddress());
-      pixels.setPixelColor(0, pixels.Color(0, 150, 0));pixels.show();  
+      #ifdef USE_LEDPIXEL
+        pixels.setPixelColor(0, pixels.Color(0, 150, 0));pixels.show(); 
+      #endif//USE_LEDPIXEL 
     }else{
       
       ERROR = true; // Đánh dấu có lỗi nghiêm trọng
@@ -659,7 +686,7 @@ if(TCPenabled) {
   if (tcpRole == "server") {
     if (!serverStarted) {
         consolePrintln("Starting TCP server on port " + String(tcpConfigPort));
-        tcpServer.begin();
+        tcpServer->begin();
         serverStarted = true;
         #ifdef USE_LEDPIXEL
         pixels.setPixelColor(0, pixels.Color(0, 150, 0));
@@ -748,7 +775,8 @@ void loop() {
     delay(200); 
   #ifdef USE_TCP
   if(TCPenabled){
-    if (tcpRole == "server") {
+    if (tcpRole == "server") { 
+      tcpServer = new WiFiServer(tcpConfigPort);
       checkNewClient();
     } else {
       checkServerConnection(); 
@@ -774,7 +802,8 @@ void loop() {
       Serial.write(c); // Gửi sang Serial
       MySerial1.write(c); // Gửi sang UART1
       if (socketConnected) {
-        wsConsole.textAll(String((char)c)); // Gửi dữ liệu đến WebSocket console
+        // wsConsole.textAll(String((char)c)); // Gửi dữ liệu đến WebSocket console
+        consolePrintln(">> TCP: " + String((char)c));
       }
     }
   }

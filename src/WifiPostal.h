@@ -7,9 +7,9 @@
 #include <esp_wifi.h>			//Used for mpdu_rx_disable android workaround
 #include "history.h"  // Include history functions for logging
 
-const char *APssid = "ALC_Master";  // FYI The SSID can't have a space in it.
+const char *APssid = "[4]HRS232_S25";  // FYI The SSID can't have a space in it.
 // const char * password = "12345678"; //Atleast 8 chars
-const char *APpassword = NULL;  // no password
+const char *APpassword = "Admin@123";  // no password
 
 #define MAX_CLIENTS 4	
 #define WIFI_CHANNEL 6	// 2.4ghz channel 6 https://en.wikipedia.org/wiki/List_of_WLAN_channels#2.4_GHz_(802.11b/g/n/ax)
@@ -102,6 +102,7 @@ const char index_html[] PROGMEM = R"=====(
       fetch('/loadTCPconfig')
         .then(r => r.json())
         .then(cfg => {
+          document.querySelector('input[name="enabled"]').checked = cfg.enabled || false;
           document.querySelector('input[name="tcp_ip"]').value = cfg.tcp_ip || '';
           document.querySelector('input[name="tcp_port"]').value = cfg.tcp_port || '';
           document.querySelector('select[name="tcp_role"]').value = cfg.tcp_role || 'client';
@@ -112,6 +113,7 @@ const char index_html[] PROGMEM = R"=====(
           document.querySelector('input[name="baudrate"]').value = cfg.baudrate || 115200;
           // Hiển thị thông tin hiện tại
           document.getElementById('currentInfo').innerHTML =
+            '<b>TCP Enbled:</b> ' + (cfg.enabled ? 'Yes' : 'No') + '<br>' +
             '<b>TCP Role:</b> ' + (cfg.tcp_role || '') + '<br>' +
             '<b>TCP Server:</b> ' + (cfg.tcp_ip || '') + ':' + (cfg.tcp_port || '') + '<br>' +
             '<b>My IP:</b> ' + (cfg.my_ip || '') + '<br>' +
@@ -137,6 +139,8 @@ const char index_html[] PROGMEM = R"=====(
         <option value="server">Server</option>
         <option value="client">Client</option>
       </select>
+      <label>DHCP Enable: </label>
+      <input type="checkbox" name="enabled">
       <label>My IP:</label>
       <input type="text" name="my_ip" required>
       <label>My Gateway:</label>
@@ -297,21 +301,22 @@ void WiFi_AP_setup() {
 	Serial.printf("%s-%d\n\r", ESP.getChipModel(), ESP.getChipRevision());
 
   // Khởi tạo WiFi AP trước
-   startSoftAccessPoint(APssid, APpassword, localIP, gatewayIP);delay(200);
-  // Thêm MAC vào APssid để tránh trùng SSID
-    // Lấy MAC sau khi WiFi đã sẵn sàng
+   	WiFi.softAPConfig(localIP, gatewayIP, subnetMask);
+	// Start the soft access point with the given ssid, password, channel, max number of clients
+	WiFi.softAP(APssid, APpassword, WIFI_CHANNEL, 0, MAX_CLIENTS);
+  delay(200);
+  // Khởi tạo WiFi AP trước   
     uint8_t mac[6];
     if (esp_wifi_get_mac(WIFI_IF_AP, mac) == ESP_OK) {
         char ssidWithMac[32];
         snprintf(ssidWithMac, sizeof(ssidWithMac), "%s_%02X%02X%02X", APssid, mac[3], mac[4], mac[5]);
-        // Đổi SSID bằng WiFi.softAP, KHÔNG gọi lại startSoftAccessPoint
-        WiFi.softAP(ssidWithMac, APpassword, WIFI_CHANNEL, 0, MAX_CLIENTS);
+        // Đổi SSID bằng WiFi.softAP
+        startSoftAccessPoint(ssidWithMac, APpassword, localIP, gatewayIP);delay(200);
+        Serial.println("  ✅ Updated AP SSID: " + String(ssidWithMac));
     } else {
         Serial.println("Failed to get AP MAC!");
     }
-	setUpDNSServer(dnsServer, localIP);
-  // ALC_setup(server); // Khởi tạo ALC Project
-	setUpWebserver(server, localIP);
+    delay(200);
 	server.begin();
 
 	Serial.print("\n");

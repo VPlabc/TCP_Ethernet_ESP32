@@ -1,32 +1,32 @@
 // ArduinoJson - https://arduinojson.org
-// Copyright © 2014-2025, Benoit BLANCHON
+// Copyright © 2014-2022, Benoit BLANCHON
 // MIT License
 
 #pragma once
 
 #include <ArduinoJson/Namespace.hpp>
 
-ARDUINOJSON_BEGIN_PRIVATE_NAMESPACE
+namespace ARDUINOJSON_NAMESPACE {
 
-// The default writer is a simple wrapper for Writers that are not copyable
+// The default writer is a simple wrapper for Writers that are not copiable
 template <typename TDestination, typename Enable = void>
 class Writer {
  public:
-  explicit Writer(TDestination& dest) : dest_(&dest) {}
+  explicit Writer(TDestination& dest) : _dest(&dest) {}
 
   size_t write(uint8_t c) {
-    return dest_->write(c);
+    return _dest->write(c);
   }
 
   size_t write(const uint8_t* s, size_t n) {
-    return dest_->write(s, n);
+    return _dest->write(s, n);
   }
 
  private:
-  TDestination* dest_;
+  TDestination* _dest;
 };
 
-ARDUINOJSON_END_PRIVATE_NAMESPACE
+}  // namespace ARDUINOJSON_NAMESPACE
 
 #include <ArduinoJson/Serialization/Writers/StaticStringWriter.hpp>
 

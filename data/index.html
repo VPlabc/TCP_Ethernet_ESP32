@@ -1,23 +1,139 @@
-
+<!DOCTYPE HTML>
 <html>
 <head>
-  <title>ESP32 Web Server</title>
+  <title>HRS232 TCP Config</title>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
   <link rel="icon" href="data:,">
+  <style>
+    body {
+      background: #f4f6fb;
+      font-family: 'Segoe UI', Arial, sans-serif;
+      margin: 0; padding: 0;
+    }
+    .container {
+      max-width: 420px;
+      margin: 40px auto;
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+      padding: 32px 28px 24px 28px;
+    }
+    h1 {
+      text-align: center;
+      color: #2c3e50;
+      margin-bottom: 12px;
+    }
+    p {
+      text-align: center;
+      color: #555;
+      margin-bottom: 28px;
+    }
+    label {
+      display: block;
+      margin-top: 16px;
+      margin-bottom: 6px;
+      color: #34495e;
+      font-weight: 500;
+    }
+    input[type="text"], input[type="number"], select {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #d0d7de;
+      border-radius: 5px;
+      font-size: 1em;
+      background: #f8fafc;
+      margin-bottom: 2px;
+      box-sizing: border-box;
+    }
+    button {
+      margin-top: 22px;
+      width: 100%;
+      padding: 10px 0;
+      background: #0078d7;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 1.1em;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button:hover {
+      background: #005fa3;
+    }
+    .info {
+      margin-top: 18px;
+      padding: 10px;
+      background: #eaf6ff;
+      border-left: 4px solid #0078d7;
+      color: #333;
+      font-size: 0.97em;
+      border-radius: 4px;
+    }
+  </style>
   <script>
+    // Lấy config từ server và cập nhật form
+    document.addEventListener('DOMContentLoaded', function() {
+      fetch('/loadTCPconfig')
+        .then(r => r.json())
+        .then(cfg => {
+          document.querySelector('input[name="enabled"]').checked = cfg.enabled || false;
+          document.querySelector('input[name="tcp_ip"]').value = cfg.tcp_ip || '';
+          document.querySelector('input[name="tcp_port"]').value = cfg.tcp_port || '';
+          document.querySelector('select[name="tcp_role"]').value = cfg.tcp_role || 'client';
+          document.querySelector('input[name="my_ip"]').value = cfg.my_ip || '';
+          document.querySelector('input[name="my_gw"]').value = cfg.my_gw || '';
+          document.querySelector('input[name="my_sn"]').value = cfg.my_sn || '';
+          document.querySelector('input[name="my_dns"]').value = cfg.my_dns || '';
+          document.querySelector('input[name="baudrate"]').value = cfg.baudrate || 115200;
+          // Hiển thị thông tin hiện tại
+          document.getElementById('currentInfo').innerHTML =
+            '<b>TCP Enbled:</b> ' + (cfg.enabled ? 'Yes' : 'No') + '<br>' +
+            '<b>TCP Role:</b> ' + (cfg.tcp_role || '') + '<br>' +
+            '<b>TCP Server:</b> ' + (cfg.tcp_ip || '') + ':' + (cfg.tcp_port || '') + '<br>' +
+            '<b>My IP:</b> ' + (cfg.my_ip || '') + '<br>' +
+            '<b>Gateway:</b> ' + (cfg.my_gw || '') + '<br>' +
+            '<b>Subnet:</b> ' + (cfg.my_sn || '') + '<br>' +
+            '<b>DNS:</b> ' + (cfg.my_dns || '') + '<br>' +
+            '<b>Baudrate:</b> ' + (cfg.baudrate || 115200);
+        });
+    });
   </script>
 </head>
 <body>
-  <h1>Hello from ESP32!</h1>
-  <p>Trang web này chạy trên ESP32.</p>
   <div class="container">
+    <h1>HRS232 TCP Config</h1>
+    <p>Cấu hình TCP/IP cho HRS232</p>
     <form action="/set_tcp_ip" method="POST">
-    <label>TCP Server IP:</label>
-    <input type="text" name="tcp_ip">
-    <label>TCP Server Port:</label>
-    <input type="number" name="tcp_port">
-    <button type="submit">Lưu cấu hình</button>
+      <label>TCP Server IP:</label>
+      <input type="text" name="tcp_ip" required>
+      <label>TCP Server Port:</label>
+      <input type="number" name="tcp_port" min="1" max="65535" required>
+      <label>TCP Role:</label>
+      <select name="tcp_role">
+        <option value="server">Server</option>
+        <option value="client">Client</option>
+      </select>
+      <label>DHCP Enable: </label>
+      <input type="checkbox" name="enabled">
+      <label>My IP:</label>
+      <input type="text" name="my_ip" required>
+      <label>My Gateway:</label>
+      <input type="text" name="my_gw" required>
+      <label>My Subnet:</label>
+      <input type="text" name="my_sn" required>
+      <label>My DNS:</label>
+      <input type="text" name="my_dns" required>
+      <label>Client Baudrate:</label>
+      <input type="number" name="baudrate" value="115200" min="300" max="1000000" required>
+      <button type="submit">Lưu cấu hình</button>
     </form>
+    <div class="info" id="currentInfo">
+      Đang tải cấu hình...
+    </div>
+    <button type="button" onclick="fetch('/api/reset').then(r=>r.text()).then(alert)">Reset ESP (API)</button>
+    <button type="button" onclick="fetch('/console').then(r=>r.text()).then(alert)">Xem Console</button>
   </div>
 </body>
 </html>

@@ -1,34 +1,32 @@
 // ArduinoJson - https://arduinojson.org
-// Copyright © 2014-2025, Benoit BLANCHON
+// Copyright © 2014-2022, Benoit BLANCHON
 // MIT License
 
 #pragma once
 
 #include <ArduinoJson/Namespace.hpp>
 
-ARDUINOJSON_BEGIN_PUBLIC_NAMESPACE
-class JsonArray;
-class JsonObject;
-class JsonVariant;
-ARDUINOJSON_END_PUBLIC_NAMESPACE
+namespace ARDUINOJSON_NAMESPACE {
+class ArrayRef;
+class ObjectRef;
+class VariantRef;
 
-ARDUINOJSON_BEGIN_PRIVATE_NAMESPACE
 // A metafunction that returns the type of the value returned by
-// JsonVariant::to<T>()
+// VariantRef::to<T>()
 template <typename T>
 struct VariantTo {};
 
 template <>
-struct VariantTo<JsonArray> {
-  using type = JsonArray;
+struct VariantTo<ArrayRef> {
+  typedef ArrayRef type;
 };
 template <>
-struct VariantTo<JsonObject> {
-  using type = JsonObject;
+struct VariantTo<ObjectRef> {
+  typedef ObjectRef type;
 };
 template <>
-struct VariantTo<JsonVariant> {
-  using type = JsonVariant;
+struct VariantTo<VariantRef> {
+  typedef VariantRef type;
 };
 
-ARDUINOJSON_END_PRIVATE_NAMESPACE
+}  // namespace ARDUINOJSON_NAMESPACE

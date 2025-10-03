@@ -1,165 +1,143 @@
 // ArduinoJson - https://arduinojson.org
-// Copyright © 2014-2025, Benoit BLANCHON
+// Copyright © 2014-2022, Benoit BLANCHON
 // MIT License
 
 #pragma once
 
 #include <ArduinoJson/Json/TextFormatter.hpp>
+#include <ArduinoJson/Misc/Visitable.hpp>
 #include <ArduinoJson/Serialization/measure.hpp>
 #include <ArduinoJson/Serialization/serialize.hpp>
-#include <ArduinoJson/Variant/VariantDataVisitor.hpp>
+#include <ArduinoJson/Variant/Visitor.hpp>
 
-ARDUINOJSON_BEGIN_PRIVATE_NAMESPACE
+namespace ARDUINOJSON_NAMESPACE {
 
 template <typename TWriter>
-class JsonSerializer : public VariantDataVisitor<size_t> {
+class JsonSerializer : public Visitor<size_t> {
  public:
   static const bool producesText = true;
 
-  JsonSerializer(TWriter writer, const ResourceManager* resources)
-      : formatter_(writer), resources_(resources) {}
+  JsonSerializer(TWriter writer) : _formatter(writer) {}
 
-  size_t visit(const ArrayData& array) {
+  FORCE_INLINE size_t visitArray(const CollectionData &array) {
     write('[');
 
-    auto slotId = array.head();
+    VariantSlot *slot = array.head();
 
-    while (slotId != NULL_SLOT) {
-      auto slot = resources_->getVariant(slotId);
+    while (slot != 0) {
+      slot->data()->resolve()->accept(*this);
 
-      slot->accept(*this, resources_);
+      slot = slot->next();
+      if (slot == 0)
+        break;
 
-      slotId = slot->next();
-
-      if (slotId != NULL_SLOT)
-        write(',');
+      write(',');
     }
 
     write(']');
     return bytesWritten();
   }
 
-  size_t visit(const ObjectData& object) {
+  size_t visitObject(const CollectionData &object) {
     write('{');
 
-    auto slotId = object.head();
+    VariantSlot *slot = object.head();
 
-    bool isKey = true;
+    while (slot != 0) {
+      _formatter.writeString(slot->key());
+      write(':');
+      slot->data()->resolve()->accept(*this);
 
-    while (slotId != NULL_SLOT) {
-      auto slot = resources_->getVariant(slotId);
-      slot->accept(*this, resources_);
+      slot = slot->next();
+      if (slot == 0)
+        break;
 
-      slotId = slot->next();
-
-      if (slotId != NULL_SLOT)
-        write(isKey ? ':' : ',');
-
-      isKey = !isKey;
+      write(',');
     }
 
     write('}');
     return bytesWritten();
   }
 
-  template <typename T>
-  enable_if_t<is_floating_point<T>::value, size_t> visit(T value) {
-    formatter_.writeFloat(value);
+  size_t visitFloat(Float value) {
+    _formatter.writeFloat(value);
     return bytesWritten();
   }
 
-  size_t visit(const char* value) {
-    formatter_.writeString(value);
+  size_t visitString(const char *value) {
+    _formatter.writeString(value);
     return bytesWritten();
   }
 
-  size_t visit(JsonString value) {
-    formatter_.writeString(value.c_str(), value.size());
+  size_t visitString(const char *value, size_t n) {
+    _formatter.writeString(value, n);
     return bytesWritten();
   }
 
-  size_t visit(RawString value) {
-    formatter_.writeRaw(value.data(), value.size());
+  size_t visitRawJson(const char *data, size_t n) {
+    _formatter.writeRaw(data, n);
     return bytesWritten();
   }
 
-  size_t visit(JsonInteger value) {
-    formatter_.writeInteger(value);
+  size_t visitSignedInteger(Integer value) {
+    _formatter.writeInteger(value);
     return bytesWritten();
   }
 
-  size_t visit(JsonUInt value) {
-    formatter_.writeInteger(value);
+  size_t visitUnsignedInteger(UInt value) {
+    _formatter.writeInteger(value);
     return bytesWritten();
   }
 
-  size_t visit(bool value) {
-    formatter_.writeBoolean(value);
+  size_t visitBoolean(bool value) {
+    _formatter.writeBoolean(value);
     return bytesWritten();
   }
 
-  size_t visit(nullptr_t) {
-    formatter_.writeRaw("null");
+  size_t visitNull() {
+    _formatter.writeRaw("null");
     return bytesWritten();
   }
 
  protected:
   size_t bytesWritten() const {
-    return formatter_.bytesWritten();
+    return _formatter.bytesWritten();
   }
 
   void write(char c) {
-    formatter_.writeRaw(c);
+    _formatter.writeRaw(c);
   }
 
-  void write(const char* s) {
-    formatter_.writeRaw(s);
+  void write(const char *s) {
+    _formatter.writeRaw(s);
   }
 
  private:
-  TextFormatter<TWriter> formatter_;
-
- protected:
-  const ResourceManager* resources_;
+  TextFormatter<TWriter> _formatter;
 };
 
-ARDUINOJSON_END_PRIVATE_NAMESPACE
-
-ARDUINOJSON_BEGIN_PUBLIC_NAMESPACE
-
-// Produces a minified JSON document.
-// https://arduinojson.org/v7/api/json/serializejson/
-template <
-    typename TDestination,
-    detail::enable_if_t<!detail::is_pointer<TDestination>::value, int> = 0>
-size_t serializeJson(JsonVariantConst source, TDestination& destination) {
-  using namespace detail;
+template <typename TSource, typename TDestination>
+size_t serializeJson(const TSource &source, TDestination &destination) {
   return serialize<JsonSerializer>(source, destination);
 }
 
-// Produces a minified JSON document.
-// https://arduinojson.org/v7/api/json/serializejson/
-inline size_t serializeJson(JsonVariantConst source, void* buffer,
-                            size_t bufferSize) {
-  using namespace detail;
+template <typename TSource>
+size_t serializeJson(const TSource &source, void *buffer, size_t bufferSize) {
   return serialize<JsonSerializer>(source, buffer, bufferSize);
 }
 
-// Computes the length of the document that serializeJson() produces.
-// https://arduinojson.org/v7/api/json/measurejson/
-inline size_t measureJson(JsonVariantConst source) {
-  using namespace detail;
+template <typename TSource>
+size_t measureJson(const TSource &source) {
   return measure<JsonSerializer>(source);
 }
 
 #if ARDUINOJSON_ENABLE_STD_STREAM
-template <typename T,
-          detail::enable_if_t<
-              detail::is_convertible<T, JsonVariantConst>::value, int> = 0>
-inline std::ostream& operator<<(std::ostream& os, const T& source) {
+template <typename T>
+inline typename enable_if<IsVisitable<T>::value, std::ostream &>::type
+operator<<(std::ostream &os, const T &source) {
   serializeJson(source, os);
   return os;
 }
 #endif
 
-ARDUINOJSON_END_PUBLIC_NAMESPACE
+}  // namespace ARDUINOJSON_NAMESPACE

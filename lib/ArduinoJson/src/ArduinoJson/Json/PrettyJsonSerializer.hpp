@@ -1,5 +1,5 @@
 // ArduinoJson - https://arduinojson.org
-// Copyright © 2014-2025, Benoit BLANCHON
+// Copyright © 2014-2022, Benoit BLANCHON
 // MIT License
 
 #pragma once
@@ -9,29 +9,28 @@
 #include <ArduinoJson/Serialization/measure.hpp>
 #include <ArduinoJson/Serialization/serialize.hpp>
 
-ARDUINOJSON_BEGIN_PRIVATE_NAMESPACE
+namespace ARDUINOJSON_NAMESPACE {
 
 template <typename TWriter>
 class PrettyJsonSerializer : public JsonSerializer<TWriter> {
-  using base = JsonSerializer<TWriter>;
+  typedef JsonSerializer<TWriter> base;
 
  public:
-  PrettyJsonSerializer(TWriter writer, const ResourceManager* resources)
-      : base(writer, resources), nesting_(0) {}
+  PrettyJsonSerializer(TWriter writer) : base(writer), _nesting(0) {}
 
-  size_t visit(const ArrayData& array) {
-    auto it = array.createIterator(base::resources_);
-    if (!it.done()) {
+  size_t visitArray(const CollectionData &array) {
+    VariantSlot *slot = array.head();
+    if (slot) {
       base::write("[\r\n");
-      nesting_++;
-      while (!it.done()) {
+      _nesting++;
+      while (slot != 0) {
         indent();
-        it->accept(*this, base::resources_);
+        slot->data()->resolve()->accept(*this);
 
-        it.next(base::resources_);
-        base::write(it.done() ? "\r\n" : ",\r\n");
+        slot = slot->next();
+        base::write(slot ? ",\r\n" : "\r\n");
       }
-      nesting_--;
+      _nesting--;
       indent();
       base::write("]");
     } else {
@@ -40,24 +39,21 @@ class PrettyJsonSerializer : public JsonSerializer<TWriter> {
     return this->bytesWritten();
   }
 
-  size_t visit(const ObjectData& object) {
-    auto it = object.createIterator(base::resources_);
-    if (!it.done()) {
+  size_t visitObject(const CollectionData &object) {
+    VariantSlot *slot = object.head();
+    if (slot) {
       base::write("{\r\n");
-      nesting_++;
-      bool isKey = true;
-      while (!it.done()) {
-        if (isKey)
-          indent();
-        it->accept(*this, base::resources_);
-        it.next(base::resources_);
-        if (isKey)
-          base::write(": ");
-        else
-          base::write(it.done() ? "\r\n" : ",\r\n");
-        isKey = !isKey;
+      _nesting++;
+      while (slot != 0) {
+        indent();
+        base::visitString(slot->key());
+        base::write(": ");
+        slot->data()->resolve()->accept(*this);
+
+        slot = slot->next();
+        base::write(slot ? ",\r\n" : "\r\n");
       }
-      nesting_--;
+      _nesting--;
       indent();
       base::write("}");
     } else {
@@ -66,45 +62,28 @@ class PrettyJsonSerializer : public JsonSerializer<TWriter> {
     return this->bytesWritten();
   }
 
-  using base::visit;
-
  private:
   void indent() {
-    for (uint8_t i = 0; i < nesting_; i++)
-      base::write(ARDUINOJSON_TAB);
+    for (uint8_t i = 0; i < _nesting; i++) base::write(ARDUINOJSON_TAB);
   }
 
-  uint8_t nesting_;
+  uint8_t _nesting;
 };
 
-ARDUINOJSON_END_PRIVATE_NAMESPACE
-
-ARDUINOJSON_BEGIN_PUBLIC_NAMESPACE
-
-// Produces JsonDocument to create a prettified JSON document.
-// https://arduinojson.org/v7/api/json/serializejsonpretty/
-template <
-    typename TDestination,
-    detail::enable_if_t<!detail::is_pointer<TDestination>::value, int> = 0>
-inline size_t serializeJsonPretty(JsonVariantConst source,
-                                  TDestination& destination) {
-  using namespace ArduinoJson::detail;
+template <typename TSource, typename TDestination>
+size_t serializeJsonPretty(const TSource &source, TDestination &destination) {
   return serialize<PrettyJsonSerializer>(source, destination);
 }
 
-// Produces JsonDocument to create a prettified JSON document.
-// https://arduinojson.org/v7/api/json/serializejsonpretty/
-inline size_t serializeJsonPretty(JsonVariantConst source, void* buffer,
-                                  size_t bufferSize) {
-  using namespace ArduinoJson::detail;
+template <typename TSource>
+size_t serializeJsonPretty(const TSource &source, void *buffer,
+                           size_t bufferSize) {
   return serialize<PrettyJsonSerializer>(source, buffer, bufferSize);
 }
 
-// Computes the length of the document that serializeJsonPretty() produces.
-// https://arduinojson.org/v7/api/json/measurejsonpretty/
-inline size_t measureJsonPretty(JsonVariantConst source) {
-  using namespace ArduinoJson::detail;
+template <typename TSource>
+size_t measureJsonPretty(const TSource &source) {
   return measure<PrettyJsonSerializer>(source);
 }
 
-ARDUINOJSON_END_PUBLIC_NAMESPACE
+}  // namespace ARDUINOJSON_NAMESPACE

@@ -1,146 +1,147 @@
 // ArduinoJson - https://arduinojson.org
-// Copyright © 2014-2025, Benoit BLANCHON
+// Copyright © 2014-2022, Benoit BLANCHON
 // MIT License
 
 #pragma once
 
-#include <ArduinoJson/Memory/ResourceManager.hpp>
-#include <ArduinoJson/Variant/VariantData.hpp>
+#include <ArduinoJson/Array/ArrayRef.hpp>
+#include <ArduinoJson/Configuration.hpp>
+#include <ArduinoJson/Numbers/convertNumber.hpp>
+#include <ArduinoJson/Numbers/parseNumber.hpp>
+#include <ArduinoJson/Object/ObjectRef.hpp>
+#include <ArduinoJson/Variant/VariantRef.hpp>
 
-ARDUINOJSON_BEGIN_PRIVATE_NAMESPACE
+#include <string.h>  // for strcmp
 
-template <typename T>
-inline void VariantData::setRawString(SerializedValue<T> value,
-                                      ResourceManager* resources) {
-  ARDUINOJSON_ASSERT(type_ == VariantType::Null);  // must call clear() first
-  auto dup = resources->saveString(adaptString(value.data(), value.size()));
-  if (dup)
-    setRawString(dup);
-}
-
-template <typename TAdaptedString>
-inline bool VariantData::setString(TAdaptedString value,
-                                   ResourceManager* resources) {
-  ARDUINOJSON_ASSERT(type_ == VariantType::Null);  // must call clear() first
-
-  if (value.isNull())
-    return false;
-
-  if (value.isStatic()) {
-    setLinkedString(value.data());
-    return true;
-  }
-
-  if (isTinyString(value, value.size())) {
-    setTinyString(value);
-    return true;
-  }
-
-  auto dup = resources->saveString(value);
-  if (dup) {
-    setOwnedString(dup);
-    return true;
-  }
-
-  return false;
-}
-
-inline void VariantData::clear(ResourceManager* resources) {
-  if (type_ & VariantTypeBits::OwnedStringBit)
-    resources->dereferenceString(content_.asOwnedString->data);
-
-#if ARDUINOJSON_USE_EXTENSIONS
-  if (type_ & VariantTypeBits::ExtensionBit)
-    resources->freeExtension(content_.asSlotId);
-#endif
-
-  auto collection = asCollection();
-  if (collection)
-    collection->clear(resources);
-
-  type_ = VariantType::Null;
-}
-
-#if ARDUINOJSON_USE_EXTENSIONS
-inline const VariantExtension* VariantData::getExtension(
-    const ResourceManager* resources) const {
-  return type_ & VariantTypeBits::ExtensionBit
-             ? resources->getExtension(content_.asSlotId)
-             : nullptr;
-}
-#endif
+namespace ARDUINOJSON_NAMESPACE {
 
 template <typename T>
-enable_if_t<sizeof(T) == 8, bool> VariantData::setFloat(
-    T value, ResourceManager* resources) {
-  ARDUINOJSON_ASSERT(type_ == VariantType::Null);  // must call clear() first
-  (void)resources;                                 // silence warning
+inline T VariantData::asIntegral() const {
+  switch (type()) {
+    case VALUE_IS_BOOLEAN:
+      return _content.asBoolean;
+    case VALUE_IS_UNSIGNED_INTEGER:
+      return convertNumber<T>(_content.asUnsignedInteger);
+    case VALUE_IS_SIGNED_INTEGER:
+      return convertNumber<T>(_content.asSignedInteger);
+    case VALUE_IS_LINKED_STRING:
+    case VALUE_IS_OWNED_STRING:
+      return parseNumber<T>(_content.asString.data);
+    case VALUE_IS_FLOAT:
+      return convertNumber<T>(_content.asFloat);
+    default:
+      return 0;
+  }
+}
 
-  float valueAsFloat = static_cast<float>(value);
-
-#if ARDUINOJSON_USE_DOUBLE
-  if (value == valueAsFloat) {
-    type_ = VariantType::Float;
-    content_.asFloat = valueAsFloat;
-  } else {
-    auto extension = resources->allocExtension();
-    if (!extension)
+inline bool VariantData::asBoolean() const {
+  switch (type()) {
+    case VALUE_IS_BOOLEAN:
+      return _content.asBoolean;
+    case VALUE_IS_SIGNED_INTEGER:
+    case VALUE_IS_UNSIGNED_INTEGER:
+      return _content.asUnsignedInteger != 0;
+    case VALUE_IS_FLOAT:
+      return _content.asFloat != 0;
+    case VALUE_IS_NULL:
       return false;
-    type_ = VariantType::Double;
-    content_.asSlotId = extension.id();
-    extension->asDouble = value;
+    default:
+      return true;
   }
-#else
-  type_ = VariantType::Float;
-  content_.asFloat = valueAsFloat;
-#endif
-  return true;
+}
+
+// T = float/double
+template <typename T>
+inline T VariantData::asFloat() const {
+  switch (type()) {
+    case VALUE_IS_BOOLEAN:
+      return static_cast<T>(_content.asBoolean);
+    case VALUE_IS_UNSIGNED_INTEGER:
+      return static_cast<T>(_content.asUnsignedInteger);
+    case VALUE_IS_SIGNED_INTEGER:
+      return static_cast<T>(_content.asSignedInteger);
+    case VALUE_IS_LINKED_STRING:
+    case VALUE_IS_OWNED_STRING:
+      return parseNumber<T>(_content.asString.data);
+    case VALUE_IS_FLOAT:
+      return static_cast<T>(_content.asFloat);
+    default:
+      return 0;
+  }
+}
+
+inline String VariantData::asString() const {
+  switch (type()) {
+    case VALUE_IS_LINKED_STRING:
+      return String(_content.asString.data, _content.asString.size,
+                    String::Linked);
+    case VALUE_IS_OWNED_STRING:
+      return String(_content.asString.data, _content.asString.size,
+                    String::Copied);
+    default:
+      return String();
+  }
+}
+
+inline bool VariantData::copyFrom(const VariantData &src, MemoryPool *pool) {
+  switch (src.type()) {
+    case VALUE_IS_ARRAY:
+      return toArray().copyFrom(src._content.asCollection, pool);
+    case VALUE_IS_OBJECT:
+      return toObject().copyFrom(src._content.asCollection, pool);
+    case VALUE_IS_OWNED_STRING: {
+      String value = src.asString();
+      return storeString(adaptString(value), pool,
+                         getStringStoragePolicy(value));
+    }
+    case VALUE_IS_OWNED_RAW:
+      return storeOwnedRaw(
+          serialized(src._content.asString.data, src._content.asString.size),
+          pool);
+    default:
+      setType(src.type());
+      _content = src._content;
+      return true;
+  }
 }
 
 template <typename T>
-enable_if_t<is_signed<T>::value, bool> VariantData::setInteger(
-    T value, ResourceManager* resources) {
-  ARDUINOJSON_ASSERT(type_ == VariantType::Null);  // must call clear() first
-  (void)resources;                                 // silence warning
-
-  if (canConvertNumber<int32_t>(value)) {
-    type_ = VariantType::Int32;
-    content_.asInt32 = static_cast<int32_t>(value);
-  }
-#if ARDUINOJSON_USE_LONG_LONG
-  else {
-    auto extension = resources->allocExtension();
-    if (!extension)
-      return false;
-    type_ = VariantType::Int64;
-    content_.asSlotId = extension.id();
-    extension->asInt64 = value;
-  }
-#endif
-  return true;
+inline typename enable_if<is_same<T, ArrayRef>::value, ArrayRef>::type
+VariantRef::to() const {
+  return ArrayRef(_pool, variantToArray(_data));
 }
 
 template <typename T>
-enable_if_t<is_unsigned<T>::value, bool> VariantData::setInteger(
-    T value, ResourceManager* resources) {
-  ARDUINOJSON_ASSERT(type_ == VariantType::Null);  // must call clear() first
-  (void)resources;                                 // silence warning
-
-  if (canConvertNumber<uint32_t>(value)) {
-    type_ = VariantType::Uint32;
-    content_.asUint32 = static_cast<uint32_t>(value);
-  }
-#if ARDUINOJSON_USE_LONG_LONG
-  else {
-    auto extension = resources->allocExtension();
-    if (!extension)
-      return false;
-    type_ = VariantType::Uint64;
-    content_.asSlotId = extension.id();
-    extension->asUint64 = value;
-  }
-#endif
-  return true;
+typename enable_if<is_same<T, ObjectRef>::value, ObjectRef>::type
+VariantRef::to() const {
+  return ObjectRef(_pool, variantToObject(_data));
 }
 
-ARDUINOJSON_END_PRIVATE_NAMESPACE
+template <typename T>
+typename enable_if<is_same<T, VariantRef>::value, VariantRef>::type
+VariantRef::to() const {
+  variantSetNull(_data);
+  return *this;
+}
+
+inline VariantConstRef operator|(VariantConstRef preferedValue,
+                                 VariantConstRef defaultValue) {
+  return preferedValue ? preferedValue : defaultValue;
+}
+
+// Out of class definition to avoid #1560
+inline bool VariantRef::set(char value) const {
+  return set(static_cast<signed char>(value));
+}
+
+// TODO: move somewhere else
+template <typename TAdaptedString, typename TCallback>
+bool CopyStringStoragePolicy::store(TAdaptedString str, MemoryPool *pool,
+                                    TCallback callback) {
+  const char *copy = pool->saveString(str);
+  String storedString(copy, str.size(), String::Copied);
+  callback(storedString);
+  return copy != 0;
+}
+
+}  // namespace ARDUINOJSON_NAMESPACE

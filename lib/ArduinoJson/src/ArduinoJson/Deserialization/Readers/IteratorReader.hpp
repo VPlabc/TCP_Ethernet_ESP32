@@ -1,42 +1,43 @@
 // ArduinoJson - https://arduinojson.org
-// Copyright © 2014-2025, Benoit BLANCHON
+// Copyright © 2014-2022, Benoit BLANCHON
 // MIT License
 
 #pragma once
 
-#include <ArduinoJson/Polyfills/type_traits.hpp>
-
-ARDUINOJSON_BEGIN_PRIVATE_NAMESPACE
+namespace ARDUINOJSON_NAMESPACE {
 
 template <typename TIterator>
 class IteratorReader {
-  TIterator ptr_, end_;
+  TIterator _ptr, _end;
 
  public:
   explicit IteratorReader(TIterator begin, TIterator end)
-      : ptr_(begin), end_(end) {}
+      : _ptr(begin), _end(end) {}
 
   int read() {
-    if (ptr_ < end_)
-      return static_cast<unsigned char>(*ptr_++);
+    if (_ptr < _end)
+      return static_cast<unsigned char>(*_ptr++);
     else
       return -1;
   }
 
   size_t readBytes(char* buffer, size_t length) {
     size_t i = 0;
-    while (i < length && ptr_ < end_)
-      buffer[i++] = *ptr_++;
+    while (i < length && _ptr < _end) buffer[i++] = *_ptr++;
     return i;
   }
 };
 
+template <typename T>
+struct void_ {
+  typedef void type;
+};
+
 template <typename TSource>
-struct Reader<TSource, void_t<typename TSource::const_iterator>>
+struct Reader<TSource, typename void_<typename TSource::const_iterator>::type>
     : IteratorReader<typename TSource::const_iterator> {
   explicit Reader(const TSource& source)
       : IteratorReader<typename TSource::const_iterator>(source.begin(),
                                                          source.end()) {}
 };
-
-ARDUINOJSON_END_PRIVATE_NAMESPACE
+}  // namespace ARDUINOJSON_NAMESPACE
