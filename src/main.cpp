@@ -26,6 +26,7 @@ Adafruit_NeoPixel pixels(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
 
 bool WARNING = false; // Biến để theo dõi trạng thái cảnh báo
 bool ERROR = false;
+bool NETWORK = false;
 
 bool TCPenabled = false;
 
@@ -98,6 +99,7 @@ const char *password = "i-soft@2023"; // Replace with your network password
 WiFiServer *tcpServer = nullptr;
 WiFiClient tcpClient;   // dùng khi ESP là client
 bool wasConnectedToServer = false;
+bool wasConnectedToClient = false;
 String tcpConfigServerIP = "192.168.3.165";
 uint16_t tcpConfigPort = 8080;
 String tcpRole = "client";
@@ -181,26 +183,23 @@ void onWsConsoleEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsE
   }
 }
 
+String msgSerial;
+String currentRole;
+int ClientBaudrate = 9600;
 
-
-
-#include "WifiPostal.h" // Thư viện WifiPostal để tạo captive portal
 
 #ifdef USE_INFO
 #include "Info.h" // Thư viện Info để quản lý thông tin hệ thống
 #endif//USE_INFO
 
-// AsyncWebServer server(80);
-// AsyncWebSocket ws("/ws");// nếu dùng WebSocket
-
-String msgSerial;
-String currentRole;
-int ClientBaudrate = 9600;
+#include "WifiPostal.h" // Thư viện WifiPostal để tạo captive portal
+#include "TCPServer.h" // Thư viện TCPServer để quản lý server TCP
 
 void Network_event(WiFiEvent_t event)
 {
   switch (event)
   {
+    Serial.println("Network Event: " + String(event));
     case ARDUINO_EVENT_ETH_START:
       consolePrintln(F("\nETH Started"));
       //set eth hostname here
@@ -270,30 +269,31 @@ void serialHandler() {
       WARNING = true; // Đánh dấu có lỗi
       }
     } else if (tcpRole == "server") {
-      if (tcpClient.connected()) {
-        tcpClient.println(msgSerial); // Gửi tin nhắn đến client TCP
-        consolePrintln("Sent to TCP client: " + msgSerial);
-        MySerial1.println(msgSerial); // Gửi tin nhắn đến UART1
-      } else {
-        consolePrintln("No TCP client connected.");
-        WARNING = true; // Đánh dấu có lỗi
-      }
+      // if (tcpClient.connected()) {
+      //   tcpClient.println(msgSerial); // Gửi tin nhắn đến client TCP
+      //   consolePrintln("Sent to TCP client: " + msgSerial);
+      //   MySerial1.println(msgSerial); // Gửi tin nhắn đến UART1
+      // } else {
+      //   consolePrintln("No TCP client connected.");
+      //   WARNING = true; // Đánh dấu có lỗi
+      // }
     }
   #endif//USE_TCP
 }
 
 void checkNewClient() {
   #ifdef USE_TCP
-    if (!tcpClient.connected()) {
-      
-        WiFiClient newClient = tcpServer->available();
-        if (newClient) {
-            consolePrintln("New client connected");
-            tcpClient = newClient;
-            WARNING = false; // Reset lỗi khi có client mới
-        }
-    }
-    #endif//USE_TCP
+      // WiFiClient newClient = tcpServer->available();
+      // if (newClient) {
+      //   tcpClient = newClient;
+      //   wasConnectedToClient = true;
+      //   consolePrintln("New client connected");
+      //   Serial.println("New client connected");
+      //   WARNING = false; // Reset lỗi khi có client mới
+      // } else {
+      //   wasConnectedToClient = false;
+      // }
+  #endif//USE_TCP
 }
 
 void checkServerConnection() {
@@ -473,6 +473,12 @@ void loadConfig() {
   file.close();
 }
 
+
+
+// AsyncWebServer server(80);
+// AsyncWebSocket ws("/ws");// nếu dùng WebSocket
+
+
 uint16_t GetServerPort(){
   #ifdef USE_ETHERNET
   return tcpConfigPort;
@@ -480,6 +486,9 @@ uint16_t GetServerPort(){
   return 80; // Default port for HTTP server
   #endif// USE_ETHERNET
 }
+
+#include "APIRecall.h" // Thư viện APIRecall để quản lý cấu hình qua API
+
 
 void setup() {
   // delay(10000);
@@ -489,9 +498,6 @@ void setup() {
   #endif// USE_LEDPIXEL
 
   Serial.begin(115200);
-  #ifdef USE_TCP
-  MySerial1.begin(ClientBaudrate, SERIAL_8N1, 2, 7);
-  #endif// UART1
   WiFi.onEvent(Network_event);
 
   if (!LittleFS.begin()) {
@@ -519,6 +525,10 @@ void setup() {
 #ifdef USE_TCP
   loadTCPConfig();
 #endif//USE_TCP 
+
+  #ifdef USE_TCP
+  MySerial1.begin(ClientBaudrate, SERIAL_8N1, 2, 7);
+  #endif// UART1
   tcpServer = new WiFiServer(tcpConfigPort);
 
   #ifdef USE_LEDPIXEL
@@ -557,6 +567,7 @@ void setup() {
 
   #ifdef USE_WIFI_AP
   WiFi_AP_setup();
+  NETWORK = true;
 
   #endif//USE_WIFI_AP  
   #ifdef USE_INFO
@@ -564,84 +575,7 @@ void setup() {
   setupInfoSocketAndTimer(&server);
 
   #endif//USE_INFO
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
-      request->send_P(200, "text/html", index_html);
-  });
-
-  server.on("/set_tcp_ip", HTTP_POST, [](AsyncWebServerRequest *request){
-    TCPenabled = request->getParam("enabled", true)->value();
-    tcpConfigServerIP = request->getParam("tcp_ip", true)->value();
-    tcpConfigPort = request->getParam("tcp_port", true)->value().toInt();
-    tcpRole = request->getParam("tcp_role", true)->value();
-    #ifdef USE_ETHERNET
-    myIP.fromString(request->getParam("my_ip", true)->value());
-    myGW.fromString(request->getParam("my_gw", true)->value());
-    mySN.fromString(request->getParam("my_sn", true)->value());
-    myDNS.fromString(request->getParam("my_dns", true)->value());
-    #endif // USE_ETHERNET
-    ClientBaudrate = request->getParam("baudrate", true)->value().toInt();
-    saveTCPConfig(); //Lưu cấu hình vào file
-    #ifdef USE_LEDPIXEL
-    pixels.setPixelColor(0, pixels.Color(150, 150, 150));
-    pixels.show();   // Send the updated pixel colors to the hardware.
-    #endif// USE_LEDPIXEL
-    #ifdef USE_INFO
-      updateInfoSocket(tcpRole, tcpConfigPort, GetServerPort(), myIP, myGW, mySN, myDNS, ClientBaudrate);
-    #endif//USE_INFO
-      if (tcpRole == "server") {
-      if (!serverStarted) {
-          consolePrintln("Starting TCP server on port " + String(tcpConfigPort));          
-          tcpServer->begin();
-          serverStarted = true;
-          #ifdef USE_LEDPIXEL
-          pixels.setPixelColor(0, pixels.Color(0, 150, 0));
-          pixels.show();
-          #endif // USE_LEDPIXEL
-      }
-    } else if (tcpRole == "client") {
-      consolePrintln("Cau hinh moi: " + tcpConfigServerIP + ":" + String(tcpConfigPort));
-      if (tcpClient.connect(tcpConfigServerIP.c_str(), tcpConfigPort)) {
-          consolePrintln("Connected to server at " + tcpConfigServerIP + ":" + String(tcpConfigPort));
-      } else {
-          consolePrintln("Connection failed");
-      }
-    }
-    request->send(200, "text/plain", "Da nhan cau hinh: " + tcpConfigServerIP + ":" + String(tcpConfigPort));
-  });
-  server.on("/console", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send_P(200, "text/html", index_console);
-  });
-// Gửi API reset sau 5s
-      server.on("/api/reset", HTTP_GET, [](AsyncWebServerRequest *req){
-        req->send(200, "text/plain", "ESP will reset in 5 seconds");
-        // Đặt hẹn giờ reset sau 5s
-        static bool resetScheduled = false;
-        if (!resetScheduled) {
-          resetScheduled = true;
-          // Dùng task để delay không block
-          xTaskCreate([](void*){
-        vTaskDelay(5000 / portTICK_PERIOD_MS);
-        ESP.restart();
-          }, "ResetTask", 2048, nullptr, 1, nullptr);
-        }
-      });
-  server.on("/loadTCPconfig", HTTP_GET, [](AsyncWebServerRequest *request){
-    StaticJsonDocument<256> doc;
-    doc["enabled"] = TCPenabled;
-    doc["tcp_ip"] = tcpConfigServerIP;
-    doc["tcp_port"] = tcpConfigPort;
-    doc["tcp_role"] = tcpRole;
-    #ifdef USE_ETHERNET
-    doc["my_ip"] = myIP.toString();
-    doc["my_gw"] = myGW.toString();
-    doc["my_sn"] = mySN.toString();
-    doc["my_dns"] = myDNS.toString();
-    #endif // USE_ETHERNET
-    doc["baudrate"] = ClientBaudrate;
-    String json;
-    serializeJson(doc, json);
-    request->send(200, "application/json", json);
-  });
+  APIRecallSetup(&server); // Khởi tạo API để gọi lại cấu hình
     
   // Khởi tạo WebSocket cho console
   wsConsole.onEvent(onWsConsoleEvent);
@@ -655,11 +589,11 @@ void setup() {
   AsyncElegantOTA.begin(&server);
   consolePrintln("OTA Update enabled at /update");
 
-#ifdef USE_ETHERNET
-  ESP32_W5500_onEvent();
-  // start the ethernet connection and the server:
-  // Use DHCP dynamic IP and random mac
-  uint16_t index = millis() % NUMBER_OF_MAC;
+  #ifdef USE_ETHERNET
+    ESP32_W5500_onEvent();
+    // start the ethernet connection and the server:
+    // Use DHCP dynamic IP and random mac
+    uint16_t index = millis() % NUMBER_OF_MAC;
     consolePrintln("Connecting to Ethernet: ");
     if(ETH.begin( MISO_GPIO, MOSI_GPIO, SCK_GPIO, CS_GPIO, INT_GPIO, SPI_CLOCK_MHZ, ETH_SPI_HOST, mac[index] )){
       consolePrintln("Ethernet connected with MAC: " + ETH.macAddress());
@@ -667,67 +601,68 @@ void setup() {
         pixels.setPixelColor(0, pixels.Color(0, 150, 0));pixels.show(); 
       #endif//USE_LEDPIXEL 
     }else{
-      
       ERROR = true; // Đánh dấu có lỗi nghiêm trọng
       WARNING = false;
     }
     delay(1000);
-  // }
+    // }
 
     ETH.config(myIP, myGW, mySN, myDNS);
-  // In ra địa chỉ IP Ethernet lên Serial và lưu vào consoleBuffer
-  consolePrintln("Ethernet IP: " + ETH.localIP().toString());
-  // ESP32_W5500_waitForConnect();
-#endif // USE_ETHERNET
+    // In ra địa chỉ IP Ethernet lên Serial và lưu vào consoleBuffer
+    consolePrintln("Ethernet IP: " + ETH.localIP().toString());
+    // ESP32_W5500_waitForConnect();
+  #endif // USE_ETHERNET
   ///////////////////////////////////
-#ifdef USE_TCP
-if(TCPenabled) {
-  consolePrintln("TCP enabled, starting configuration...");
-  if (tcpRole == "server") {
-    if (!serverStarted) {
-        consolePrintln("Starting TCP server on port " + String(tcpConfigPort));
-        tcpServer->begin();
-        serverStarted = true;
-        #ifdef USE_LEDPIXEL
-        pixels.setPixelColor(0, pixels.Color(0, 150, 0));
-        pixels.show();
-        #endif // USE_LEDPIXEL
-    }
-  } else if (tcpRole == "client") {
-    // Thiết lập client TCP
-    consolePrintln("Connecting to server at " + tcpConfigServerIP + ":" + String(tcpConfigPort));
-    int retry = 0;
-    const int maxRetry = 5;
-    while (!tcpClient.connected() && retry < maxRetry) {
-      if (tcpClient.connect(tcpConfigServerIP.c_str(), tcpConfigPort)) {
-        consolePrintln("Connected to server at " + tcpConfigServerIP + ":" + String(tcpConfigPort));
-        #ifdef USE_LEDPIXEL
-        pixels.setPixelColor(0, pixels.Color(0, 150, 150));
-        pixels.show();   // Send the updated pixel colors to the hardware.
-        #endif // USE_LEDPIXEL
-        break;
-      } else {
-        consolePrintln("Connection failed, retrying...");
-        #ifdef USE_LEDPIXEL
-        pixels.setPixelColor(0, pixels.Color(0, 150, 100));
-        pixels.show();   // Send the updated pixel colors to the hardware.
-        #endif// USE_LEDPIXEL
-        delay(500);
-        retry++;
-        #ifdef USE_LEDPIXEL
-        pixels.setPixelColor(0, pixels.Color(0, 150, 0));
-        pixels.show();   // Send the updated pixel colors to the hardware.
-        #endif // USE_LEDPIXEL
-        delay(500);
+  #ifdef USE_TCP
+  if(TCPenabled) {
+    consolePrintln("TCP enabled, starting configuration...");
+    if (tcpRole == "server") {
+      // if (!serverStarted) {
+      //     consolePrintln("Starting TCP server on port " + String(tcpConfigPort));
+      //     tcpServer->begin(tcpConfigPort);
+      //     serverStarted = true;
+      //     #ifdef USE_LEDPIXEL
+      //     pixels.setPixelColor(0, pixels.Color(0, 150, 0));
+      //     pixels.show();
+      //     #endif // USE_LEDPIXEL
+      // }
+      consolePrintln("Starting TCP server on port " + String(tcpConfigPort) + " | IP: " + myIP.toString());
+      TCP_setup(myIP, tcpConfigPort);
+    } else if (tcpRole == "client") {
+      // Thiết lập client TCP
+      consolePrintln("Connecting to server at " + tcpConfigServerIP + ":" + String(tcpConfigPort));
+      int retry = 0;
+      const int maxRetry = 5;
+      while (!tcpClient.connected() && retry < maxRetry) {
+        if (tcpClient.connect(tcpConfigServerIP.c_str(), tcpConfigPort)) {
+          consolePrintln("Connected to server at " + tcpConfigServerIP + ":" + String(tcpConfigPort));
+          #ifdef USE_LEDPIXEL
+          pixels.setPixelColor(0, pixels.Color(0, 150, 150));
+          pixels.show();   // Send the updated pixel colors to the hardware.
+          #endif // USE_LEDPIXEL
+          break;
+        } else {
+          consolePrintln("Connection failed, retrying...");
+          #ifdef USE_LEDPIXEL
+          pixels.setPixelColor(0, pixels.Color(0, 150, 100));
+          pixels.show();   // Send the updated pixel colors to the hardware.
+          #endif// USE_LEDPIXEL
+          delay(500);
+          retry++;
+          #ifdef USE_LEDPIXEL
+          pixels.setPixelColor(0, pixels.Color(0, 150, 0));
+          pixels.show();   // Send the updated pixel colors to the hardware.
+          #endif // USE_LEDPIXEL
+          delay(500);
+        }
+      }
+      if (!tcpClient.connected()) {
+        consolePrintln("Could not connect to server after retries.");
       }
     }
-    if (!tcpClient.connected()) {
-      consolePrintln("Could not connect to server after retries.");
-    }
-  }
 
-}
-#endif // USE_TCP
+  }
+  #endif // USE_TCP
   ///////////////////////////////////
   Serial.println("Ram :" + String(ESP.getFreeHeap()/1024) + " KB");
     consolePrintln("Setup completed");
@@ -735,9 +670,10 @@ if(TCPenabled) {
     #ifdef USE_LEDPIXEL
     pixels.setPixelColor(0, pixels.Color(0, 150, 0));pixels.show();   // Send the updated pixel colors to the hardware.
     #endif // USE_LEDPIXEL
-  }//setup
+}//setup
 
 uint8_t wheelval = 0;
+bool once_setup = true;
 void loop() {
     // Blink green LED (pixel 0) without delay using millis() nếu không lỗi
     static unsigned long lastBlinkTime = 0;
@@ -757,6 +693,8 @@ void loop() {
           pixels.setPixelColor(0, pixels.Color(255, 200, 0)); // LED cam nếu có lỗi
         } else if (ERROR) { WARNING = false;
           pixels.setPixelColor(0, pixels.Color(255, 0, 0)); // LED đỏ nếu có lỗi
+        } else if (NETWORK) {
+          pixels.setPixelColor(0, pixels.Color(0, 100, 150)); // LED xanh dương nếu có lỗi mạng
         } else {
           pixels.setPixelColor(0, pixels.Color(0, 150, 0)); 
         }
@@ -771,41 +709,66 @@ void loop() {
         #endif // USE_LEDPIXEL
       }
 
-
-    delay(200); 
+      static unsigned long wifiStartTime = millis();
+      // if (WiFi.status() == WL_CONNECTED) {
+        if (millis() - wifiStartTime > 180000) { // 3 phút = 180000 ms
+          consolePrintln("WiFi connected for over 3 minutes, disconnecting...");
+          WiFi.disconnect(true);\
+          NETWORK = false; // Đánh dấu có lỗi mạng
+        }
+      // } else {
+        // wifiStartTime = millis(); // Reset timer nếu mất kết nối
+      // }
+    // delay(200); 
   #ifdef USE_TCP
   if(TCPenabled){
     if (tcpRole == "server") { 
-      tcpServer = new WiFiServer(tcpConfigPort);
-      checkNewClient();
+      TCP_loop();
+    //   if (once_setup){
+    //     once_setup = false;
+    //     tcpServer = new WiFiServer(tcpConfigPort);
+    //   }
+      // checkNewClient();
+
     } else {
       checkServerConnection(); 
     }
 
-    if (Serial.available() > 0) {
-      serialHandler();
-    }
-
     if (MySerial1.available()) {
       int c = MySerial1.read();
-      MySerial1.write(c); // Gửi sang UART1
-      Serial.write(c); // Gửi sang Serial
-      if (tcpRole == "server" && tcpClient.connected()) {
-        tcpClient.write(c); // Gửi sang client TCP nếu có kết nối
-      } else if (tcpRole == "client" && wasConnectedToServer) {
-        tcpClient.write(c); // Gửi sang server TCP nếu có kết nối
-      }
-    }
+      // MySerial1.write(c); // Gửi sang UART1
 
-    if(tcpClient.available()) {
-      int c = tcpClient.read();
-      Serial.write(c); // Gửi sang Serial
-      MySerial1.write(c); // Gửi sang UART1
-      if (socketConnected) {
-        // wsConsole.textAll(String((char)c)); // Gửi dữ liệu đến WebSocket console
-        consolePrintln(">> TCP: " + String((char)c));
+      if (tcpRole == "server") {
+        // Serial.write(c); // Gửi sang Serial
+        // if (clients.space() > 32 && clients.canSend()) {
+        // char reply[32];
+        // sprintf(reply, "this is from %s", SERVER_HOST_NAME);
+        // client->add(reply, strlen(reply));
+        // client->send();
+
+      //   tcpServer->write(c); // Gửi sang client TCP nếu có kết nối
+      } else if (tcpRole == "client" && wasConnectedToServer) {
+      //   tcpClient.write(c); // Gửi sang server TCP nếu có kết nối
       }
     }
+    
+    // if (Serial.available() > 0) {
+
+    //     tcpClient.write(c); // Gửi sang server TCP nếu có kết nối
+    //   }
+
+    // if(tcpClient.connected() && tcpClient.available()) {
+    //   int c = tcpClient.read();
+    //   // Serial.write(c); // Gửi sang Serial
+    //   MySerial1.write(c); // Gửi sang UART1
+    //   if (socketConnected) {
+    //     // wsConsole.textAll(String((char)c)); // Gửi dữ liệu đến WebSocket console
+    //     consolePrintln(">> TCP: " + String((char)c));
+    //   }
+    // }
+
+      // }
+    // }
   }
   #endif//USE_TCP
 
